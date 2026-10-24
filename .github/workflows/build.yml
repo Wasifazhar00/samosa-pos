@@ -10,7 +10,7 @@ jobs:
     steps:
       - uses: actions/checkout@v4
       
-      - uses: actions/setup-java@v3
+      - uses: actions/setup-java@v5
         with:
           distribution: 'zulu'
           java-version: '17'
@@ -19,7 +19,6 @@ jobs:
         with:
           channel: 'stable'
 
-      # Automatically generate android platform configuration files
       - name: Create Android Platform Files
         run: flutter create . --platforms=android --org com.samosapos.app
 
@@ -45,7 +44,6 @@ jobs:
 
       - run: flutter config --enable-windows-desktop
 
-      # Automatically generate windows platform configuration files
       - name: Create Windows Platform Files
         run: flutter create . --platforms=windows --org com.samosapos.app
 
