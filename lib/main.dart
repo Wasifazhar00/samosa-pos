@@ -1,4 +1,4 @@
-import 'dart:async';
+import 'dart:convert';
 import 'dart:io';
 import 'dart:ui' as ui;
 import 'package:flutter/material.dart';
@@ -56,7 +56,7 @@ class MenuItem {
         nameEn: map['name_en'] ?? '',
         nameUr: map['name_ur'] ?? '',
         price: (map['price'] as num).toDouble(),
-        icon: map['icon'] ?? '馃嵔锔�',
+        icon: map['icon'] ?? '🥟',
         inStock: map['in_stock'] == 1,
       );
 }
@@ -176,8 +176,33 @@ class DatabaseHelper {
 
     return await openDatabase(
       path,
-      version: 1,
+      version: 2,
       onCreate: _createDB,
+      onUpgrade: (db, oldVersion, newVersion) async {
+        if (oldVersion < 2) {
+          await db.execute('''CREATE TABLE IF NOT EXISTS stock_movements (
+            id INTEGER PRIMARY KEY AUTOINCREMENT, sale_id INTEGER NOT NULL,
+            inventory_id INTEGER NOT NULL, quantity REAL NOT NULL
+          )''');
+          await db.execute('''CREATE TABLE IF NOT EXISTS active_orders (
+            id TEXT PRIMARY KEY, token_no TEXT NOT NULL, table_name TEXT NOT NULL,
+            items_json TEXT NOT NULL, time_seated TEXT NOT NULL
+          )''');
+          // Repair duplicate legacy bill numbers before enforcing uniqueness.
+          final legacySales = await db.query('sales', columns: ['id', 'bill_no'], orderBy: 'id ASC');
+          final seenBills = <String>{};
+          for (final row in legacySales) {
+            final id = row['id'] as int;
+            final bill = (row['bill_no'] as String?)?.trim() ?? '';
+            if (bill.isEmpty || !seenBills.add(bill)) {
+              final repaired = 'INV-LEGACY-$id';
+              await db.update('sales', {'bill_no': repaired}, where: 'id = ?', whereArgs: [id]);
+              seenBills.add(repaired);
+            }
+          }
+          await db.execute('CREATE UNIQUE INDEX IF NOT EXISTS idx_sales_bill_no ON sales(bill_no)');
+        }
+      },
     );
   }
 
@@ -214,7 +239,7 @@ class DatabaseHelper {
     await db.execute('''
       CREATE TABLE sales (
         id INTEGER PRIMARY KEY AUTOINCREMENT,
-        bill_no TEXT,
+        bill_no TEXT UNIQUE,
         token_no TEXT,
         order_type TEXT,
         items_summary TEXT,
@@ -226,6 +251,19 @@ class DatabaseHelper {
         created_at TEXT
       )
     ''');
+
+    await db.execute('''
+      CREATE TABLE stock_movements (
+        id INTEGER PRIMARY KEY AUTOINCREMENT,
+        sale_id INTEGER NOT NULL,
+        inventory_id INTEGER NOT NULL,
+        quantity REAL NOT NULL
+      )
+    ''');
+    await db.execute('''CREATE TABLE active_orders (
+      id TEXT PRIMARY KEY, token_no TEXT NOT NULL, table_name TEXT NOT NULL,
+      items_json TEXT NOT NULL, time_seated TEXT NOT NULL
+    )''');
 
     await db.execute('''
       CREATE TABLE settings (
@@ -253,11 +291,11 @@ class DatabaseHelper {
     int alooId = await db.insert('inventory', {'name': 'Aloo Filling', 'stock_qty': 50, 'unit': 'kg'});
     int cokeId = await db.insert('inventory', {'name': 'Cold Drink (Coke)', 'stock_qty': 40, 'unit': 'bottles'});
 
-    int m1 = await db.insert('menu', {'name_en': 'Chicken Samosa', 'name_ur': 'Chicken Samosa', 'price': 50, 'icon': '馃崡', 'in_stock': 1});
-    int m2 = await db.insert('menu', {'name_en': 'Aloo Samosa', 'name_ur': 'Aloo Samosa', 'price': 30, 'icon': '馃', 'in_stock': 1});
-    int m3 = await db.insert('menu', {'name_en': 'Single Plate', 'name_ur': 'Single Plate', 'price': 80, 'icon': '馃嵔锔�', 'in_stock': 1});
-    int m4 = await db.insert('menu', {'name_en': 'Double Plate', 'name_ur': 'Double Plate', 'price': 140, 'icon': '馃嵄', 'in_stock': 1});
-    int m5 = await db.insert('menu', {'name_en': 'Cold Drink', 'name_ur': 'Cold Drink', 'price': 70, 'icon': '馃イ', 'in_stock': 1});
+    int m1 = await db.insert('menu', {'name_en': 'Chicken Samosa', 'name_ur': 'Chicken Samosa', 'price': 50, 'icon': '🍗', 'in_stock': 1});
+    int m2 = await db.insert('menu', {'name_en': 'Aloo Samosa', 'name_ur': 'Aloo Samosa', 'price': 30, 'icon': '🥔', 'in_stock': 1});
+    int m3 = await db.insert('menu', {'name_en': 'Single Plate', 'name_ur': 'Single Plate', 'price': 80, 'icon': '🥟', 'in_stock': 1});
+    int m4 = await db.insert('menu', {'name_en': 'Double Plate', 'name_ur': 'Double Plate', 'price': 140, 'icon': '🥟', 'in_stock': 1});
+    int m5 = await db.insert('menu', {'name_en': 'Cold Drink', 'name_ur': 'Cold Drink', 'price': 70, 'icon': '🥤', 'in_stock': 1});
 
     await db.insert('recipes', {'menu_id': m1, 'inventory_id': patiId, 'required_qty': 1});
     await db.insert('recipes', {'menu_id': m1, 'inventory_id': chickenId, 'required_qty': 0.05});
@@ -294,7 +332,30 @@ class DatabaseHelper {
 
   Future<int> deleteMenuItem(int id) async {
     final db = await instance.database;
-    return await db.delete('menu', where: 'id = ?', whereArgs: [id]);
+    return db.transaction((txn) async {
+      await txn.delete('recipes', where: 'menu_id = ?', whereArgs: [id]);
+      return txn.delete('menu', where: 'id = ?', whereArgs: [id]);
+    });
+  }
+
+
+  Future<void> saveRecipesForMenuItem(int menuId, List<Map<String, dynamic>> recipes) async {
+    final db = await instance.database;
+    await db.transaction((txn) async {
+      await txn.delete('recipes', where: 'menu_id = ?', whereArgs: [menuId]);
+      for (final recipe in recipes) {
+        final inventoryId = recipe['inventory_id'] as int;
+        final requiredQty = (recipe['required_qty'] as num).toDouble();
+        if (!requiredQty.isFinite || requiredQty <= 0) throw ArgumentError('Recipe quantities must be greater than zero.');
+        await txn.insert('recipes', {'menu_id': menuId, 'inventory_id': inventoryId, 'required_qty': requiredQty});
+      }
+    });
+  }
+
+  Future<List<Map<String, dynamic>>> getRecipesForMenuItem(int menuId) async {
+    final db = await instance.database;
+    return db.rawQuery('''SELECT recipes.inventory_id, recipes.required_qty, inventory.name, inventory.unit
+      FROM recipes INNER JOIN inventory ON inventory.id = recipes.inventory_id WHERE recipes.menu_id = ?''', [menuId]);
   }
 
   Future<List<InventoryItem>> getInventory() async {
@@ -310,7 +371,10 @@ class DatabaseHelper {
 
   Future<int> deleteInventoryItem(int id) async {
     final db = await instance.database;
-    return await db.delete('inventory', where: 'id = ?', whereArgs: [id]);
+    return db.transaction((txn) async {
+      await txn.delete('recipes', where: 'inventory_id = ?', whereArgs: [id]);
+      return txn.delete('inventory', where: 'id = ?', whereArgs: [id]);
+    });
   }
 
   Future<int> updateStockQty(int id, double newQty) async {
@@ -330,6 +394,7 @@ class DatabaseHelper {
   }
 
   Future<void> updateSaleDetails(int saleId, double newAmount, String mobile, String address) async {
+    if (!newAmount.isFinite || newAmount < 0) throw ArgumentError('Amount must be non-negative.');
     final db = await instance.database;
     await db.update(
       'sales',
@@ -345,52 +410,153 @@ class DatabaseHelper {
 
   Future<void> deleteSale(int saleId) async {
     final db = await instance.database;
-    await db.delete('sales', where: 'id = ?', whereArgs: [saleId]);
+    await db.transaction((txn) async {
+      final movements = await txn.query('stock_movements', where: 'sale_id = ?', whereArgs: [saleId]);
+      for (final movement in movements) {
+        final inventoryId = movement['inventory_id'] as int;
+        final quantity = (movement['quantity'] as num).toDouble();
+        await txn.rawUpdate('UPDATE inventory SET stock_qty = stock_qty + ? WHERE id = ?', [quantity, inventoryId]);
+      }
+      await txn.delete('stock_movements', where: 'sale_id = ?', whereArgs: [saleId]);
+      await txn.delete('sales', where: 'id = ?', whereArgs: [saleId]);
+    });
   }
 
-  Future<void> processSale({
+  Future<String> processSale({
     required List<CartItem> cartItems,
     required String paymentMethod,
     required String tokenNo,
     required String orderType,
     required bool isPaid,
+    required double finalTotal,
     String? mobile,
     String? address,
   }) async {
+    if (cartItems.isEmpty) {
+      throw ArgumentError('Cannot save an empty sale.');
+    }
+    if (!finalTotal.isFinite || finalTotal < 0) {
+      throw ArgumentError('Sale total must be a valid non-negative amount.');
+    }
+
     final db = await instance.database;
+    final now = DateTime.now();
+    final billNo = 'INV-${now.microsecondsSinceEpoch}';
 
     await db.transaction((txn) async {
-      double grandTotal = 0;
-      List<String> itemNames = [];
-
-      for (var cart in cartItems) {
-        grandTotal += cart.total;
+      final itemNames = <String>[];
+      for (final cart in cartItems) {
         itemNames.add('${cart.quantity}x ${cart.item.nameEn}');
-
-        final recipes = await txn.query('recipes', where: 'menu_id = ?', whereArgs: [cart.item.id]);
-
-        for (var rule in recipes) {
-          int invId = rule['inventory_id'] as int;
-          double reqQty = (rule['required_qty'] as num).toDouble();
-          double totalDeduction = reqQty * cart.quantity;
-
-          await txn.rawUpdate('UPDATE inventory SET stock_qty = stock_qty - ? WHERE id = ?', [totalDeduction, invId]);
-        }
       }
-
-      await txn.insert('sales', {
-        'bill_no': 'INV-${DateTime.now().millisecondsSinceEpoch.toString().substring(7)}',
+      final saleId = await txn.insert('sales', {
+        'bill_no': billNo,
         'token_no': tokenNo,
         'order_type': orderType,
         'items_summary': itemNames.join(', '),
         'customer_mobile': mobile,
         'customer_address': address,
-        'total_amount': grandTotal,
+        'total_amount': finalTotal,
         'payment_method': paymentMethod,
         'is_paid': isPaid ? 1 : 0,
-        'created_at': DateTime.now().toIso8601String(),
+        'created_at': now.toIso8601String(),
       });
+
+      for (final cart in cartItems) {
+        if (cart.quantity <= 0 || !cart.customPrice.isFinite || cart.customPrice < 0) {
+          throw ArgumentError('Sale contains an invalid quantity or price.');
+        }
+        final recipes = await txn.query(
+          'recipes',
+          where: 'menu_id = ?',
+          whereArgs: [cart.item.id],
+        );
+        if (recipes.isEmpty) {
+          throw StateError('No stock recipe is configured for ${cart.item.nameEn}. Add its ingredient recipe before selling it.');
+        }
+
+        for (final rule in recipes) {
+          final invId = rule['inventory_id'] as int;
+          final reqQty = (rule['required_qty'] as num).toDouble();
+          final deduction = reqQty * cart.quantity;
+          final inventoryRows = await txn.query(
+            'inventory',
+            columns: ['stock_qty', 'name', 'unit'],
+            where: 'id = ?',
+            whereArgs: [invId],
+            limit: 1,
+          );
+
+          if (inventoryRows.isEmpty) {
+            throw StateError('Inventory item $invId was not found.');
+          }
+
+          final available = (inventoryRows.first['stock_qty'] as num).toDouble();
+          if (available < deduction) {
+            throw StateError(
+              'Insufficient stock for ${inventoryRows.first['name']}. '
+              'Available: $available ${inventoryRows.first['unit']}.',
+            );
+          }
+
+          final updated = await txn.rawUpdate(
+            'UPDATE inventory SET stock_qty = stock_qty - ? WHERE id = ? AND stock_qty >= ?',
+            [deduction, invId, deduction],
+          );
+          if (updated != 1) {
+            throw StateError('Stock changed during checkout for ${inventoryRows.first['name']}. Please retry.');
+          }
+          await txn.insert('stock_movements', {
+            'sale_id': saleId, 'inventory_id': invId, 'quantity': deduction,
+          });
+        }
+      }
+
     });
+
+    return billNo;
+  }
+
+
+  Future<void> saveActiveOrder(OrderToken token) async {
+    final db = await instance.database;
+    final items = token.items.map((c) => {
+      'menu_id': c.item.id, 'quantity': c.quantity, 'custom_price': c.customPrice,
+    }).toList();
+    await db.insert('active_orders', {
+      'id': token.id, 'token_no': token.tokenNo, 'table_name': token.tableName,
+      'items_json': jsonEncode(items), 'time_seated': token.timeSeated.toIso8601String(),
+    }, conflictAlgorithm: ConflictAlgorithm.replace);
+  }
+
+  Future<List<OrderToken>> getActiveOrders() async {
+    final db = await instance.database;
+    final rows = await db.query('active_orders', orderBy: 'time_seated ASC');
+    final result = <OrderToken>[];
+    for (final row in rows) {
+      final rawItems = jsonDecode(row['items_json'] as String) as List<dynamic>;
+      final items = <CartItem>[];
+      for (final raw in rawItems) {
+        final data = Map<String, dynamic>.from(raw as Map);
+        final menuRows = await db.query('menu', where: 'id = ?', whereArgs: [data['menu_id']], limit: 1);
+        if (menuRows.isEmpty) continue;
+        items.add(CartItem(
+          item: MenuItem.fromMap(menuRows.first),
+          quantity: data['quantity'] as int,
+          customPrice: (data['custom_price'] as num).toDouble(),
+        ));
+      }
+      result.add(OrderToken(
+        id: row['id'] as String, tokenNo: row['token_no'] as String,
+        tableName: row['table_name'] as String, items: items,
+        timeSeated: DateTime.tryParse(row['time_seated'] as String) ?? DateTime.now(),
+      ));
+    }
+    return result;
+  }
+
+  Future<void> deleteActiveOrder(String id) async {
+    final db = await instance.database;
+    await db.delete('active_orders', where: 'id = ?', whereArgs: [id]);
   }
 
   Future<String> getSetting(String key, {String defaultValue = ''}) async {
@@ -473,10 +639,31 @@ class _MainPosScreenState extends State<MainPosScreen> {
   void initState() {
     super.initState();
     _loadSettings();
+    _loadActiveOrders();
+  }
+
+  Future<void> _loadActiveOrders() async {
+    final orders = await DatabaseHelper.instance.getActiveOrders();
+    if (!mounted) return;
+    setState(() => activeTokens = orders);
+  }
+
+  Future<void> _saveCurrentTableOrder() async {
+    final index = activeTokens.indexWhere((t) => t.tokenNo == currentTokenNo && t.tableName == activeTable);
+    final token = OrderToken(
+      id: index >= 0 ? activeTokens[index].id : DateTime.now().microsecondsSinceEpoch.toString(),
+      tokenNo: currentTokenNo, tableName: activeTable,
+      items: cart.map((c) => CartItem(item: c.item, quantity: c.quantity, customPrice: c.customPrice)).toList(),
+      timeSeated: index >= 0 ? activeTokens[index].timeSeated : DateTime.now(),
+    );
+    await DatabaseHelper.instance.saveActiveOrder(token);
+    if (!mounted) return;
+    setState(() { if (index >= 0) activeTokens[index] = token; else activeTokens.add(token); });
   }
 
   void _loadSettings() async {
     String name = await DatabaseHelper.instance.getSetting('shop_name', defaultValue: 'Bismillah Shereen Mehal Samosa POS');
+    if (!mounted) return;
     setState(() {
       shopName = name;
     });
@@ -511,6 +698,7 @@ class _MainPosScreenState extends State<MainPosScreen> {
         index: _selectedIndex,
         children: [
           PosTerminalView(
+            key: ValueKey('pos-$_selectedIndex'),
             isUrdu: widget.isUrdu,
             cart: cart,
             tokenNo: currentTokenNo,
@@ -524,14 +712,17 @@ class _MainPosScreenState extends State<MainPosScreen> {
               }
             }),
             onClearCart: () => setState(() => cart.clear()),
-            onCheckoutSuccess: () => setState(() => cart.clear()),
+            onCheckoutSuccess: (orderType) { final old = activeTokens.where((t) => t.tokenNo == currentTokenNo && t.tableName == activeTable).toList(); for (final t in old) { DatabaseHelper.instance.deleteActiveOrder(t.id); } setState(() { cart.clear(); activeTokens.removeWhere((t) => t.tokenNo == currentTokenNo && t.tableName == activeTable); currentTokenNo = 'T-${DateTime.now().millisecondsSinceEpoch}'; }); },
+            onSaveTableOrder: _saveCurrentTableOrder,
           ),
           TablesView(
             isUrdu: widget.isUrdu,
             tokens: activeTokens,
             onSelectToken: (token) {
               setState(() {
-                cart = List.from(token.items);
+                final existing = activeTokens.indexWhere((t) => t.id == token.id);
+                if (existing < 0) activeTokens.add(token);
+                cart = token.items.map((c) => CartItem(item: c.item, quantity: c.quantity, customPrice: c.customPrice)).toList();
                 activeTable = token.tableName;
                 currentTokenNo = token.tokenNo;
                 _selectedIndex = 0;
@@ -548,6 +739,7 @@ class _MainPosScreenState extends State<MainPosScreen> {
         ],
       ),
       bottomNavigationBar: NavigationBar(
+        labelBehavior: NavigationDestinationLabelBehavior.onlyShowSelected,
         selectedIndex: _selectedIndex,
         onDestinationSelected: (idx) => setState(() => _selectedIndex = idx),
         destinations: const [
@@ -591,7 +783,8 @@ class PosTerminalView extends StatefulWidget {
   final String tableName;
   final Function(MenuItem) onAddToCart;
   final VoidCallback onClearCart;
-  final VoidCallback onCheckoutSuccess;
+  final ValueChanged<String> onCheckoutSuccess;
+  final VoidCallback onSaveTableOrder;
 
   const PosTerminalView({
     super.key,
@@ -602,6 +795,7 @@ class PosTerminalView extends StatefulWidget {
     required this.onAddToCart,
     required this.onClearCart,
     required this.onCheckoutSuccess,
+    required this.onSaveTableOrder,
   });
 
   @override
@@ -613,6 +807,7 @@ class _PosTerminalViewState extends State<PosTerminalView> {
   String selectedOrderType = 'Dine-In';
   final mobileCtrl = TextEditingController();
   final addressCtrl = TextEditingController();
+  final discountCtrl = TextEditingController();
   double discount = 0;
 
   bool enableDineIn = true;
@@ -630,6 +825,7 @@ class _PosTerminalViewState extends State<PosTerminalView> {
     String d = await DatabaseHelper.instance.getSetting('enable_dine_in', defaultValue: '1');
     String t = await DatabaseHelper.instance.getSetting('enable_takeaway', defaultValue: '1');
     String del = await DatabaseHelper.instance.getSetting('enable_delivery', defaultValue: '1');
+    if (!mounted) return;
 
     setState(() {
       enableDineIn = d == '1';
@@ -646,8 +842,16 @@ class _PosTerminalViewState extends State<PosTerminalView> {
     });
   }
 
+  @override
+  void dispose() {
+    mobileCtrl.dispose();
+    addressCtrl.dispose();
+    discountCtrl.dispose();
+    super.dispose();
+  }
+
   double get subTotal => widget.cart.fold(0, (sum, item) => sum + item.total);
-  double get grandTotal => subTotal - discount < 0 ? 0 : subTotal - discount;
+  double get grandTotal => subTotal - discount.clamp(0, subTotal).toDouble() < 0 ? 0 : subTotal - discount.clamp(0, subTotal).toDouble();
 
   @override
   Widget build(BuildContext context) {
@@ -680,6 +884,20 @@ class _PosTerminalViewState extends State<PosTerminalView> {
                         ],
                       ),
                       const SizedBox(height: 6),
+                      if (selectedOrderType == 'Delivery') ...[
+                        TextField(controller: mobileCtrl, keyboardType: TextInputType.phone, decoration: const InputDecoration(labelText: 'Mobile Number (Required)', prefixIcon: Icon(Icons.phone), isDense: true)),
+                        const SizedBox(height: 4),
+                        TextField(controller: addressCtrl, decoration: const InputDecoration(labelText: 'Delivery Address', prefixIcon: Icon(Icons.home), isDense: true)),
+                      ],
+                      Row(children: [
+                        const Text('Discount Rs.'),
+                        const SizedBox(width: 8),
+                        SizedBox(width: 90, child: TextField(controller: discountCtrl, keyboardType: TextInputType.number, decoration: const InputDecoration(border: OutlineInputBorder(), isDense: true), onChanged: (v) => setState(() => discount = (double.tryParse(v) ?? 0).clamp(0, subTotal).toDouble()))),
+                      ]),
+                      if (widget.cart.isNotEmpty)
+                        SizedBox(height: 70, child: ListView.builder(scrollDirection: Axis.horizontal, itemCount: widget.cart.length, itemBuilder: (context, index) { final c = widget.cart[index]; return Card(child: Padding(padding: const EdgeInsets.all(6), child: Row(mainAxisSize: MainAxisSize.min, children: [Text('${c.item.nameEn} x${c.quantity}'), IconButton(icon: const Icon(Icons.remove_circle, color: Colors.red), onPressed: () => setState(() { if (c.quantity > 1) { c.quantity--; } else { widget.cart.removeAt(index); } })),]))); })),
+                      if (selectedOrderType == 'Dine-In' && widget.cart.isNotEmpty)
+                        SizedBox(width: double.infinity, child: OutlinedButton.icon(onPressed: () { widget.onSaveTableOrder(); ScaffoldMessenger.of(context).showSnackBar(const SnackBar(content: Text('Table order saved.'))); }, icon: const Icon(Icons.table_restaurant), label: const Text('Save Table Order'))),
                       Row(
                         children: [
                           Expanded(
@@ -800,12 +1018,15 @@ class _PosTerminalViewState extends State<PosTerminalView> {
                               child: TextField(
                                 keyboardType: TextInputType.number,
                                 decoration: const InputDecoration(border: OutlineInputBorder(), isDense: true),
-                                onChanged: (v) => setState(() => discount = double.tryParse(v) ?? 0),
+                                controller: discountCtrl,
+                                onChanged: (v) => setState(() => discount = (double.tryParse(v) ?? 0).clamp(0, subTotal).toDouble()),
                               ),
                             ),
                           ],
                         ),
                         const SizedBox(height: 8),
+                        if (selectedOrderType == 'Dine-In' && widget.cart.isNotEmpty)
+                          SizedBox(width: double.infinity, child: OutlinedButton.icon(onPressed: () { widget.onSaveTableOrder(); ScaffoldMessenger.of(context).showSnackBar(const SnackBar(content: Text('Table order saved.'))); }, icon: const Icon(Icons.table_restaurant), label: const Text('Save Table Order'))),
                         Container(
                           padding: const EdgeInsets.all(10),
                           decoration: BoxDecoration(color: Colors.green.shade50, borderRadius: BorderRadius.circular(10)),
@@ -917,7 +1138,7 @@ class _PosTerminalViewState extends State<PosTerminalView> {
                       Text(item.icon, style: const TextStyle(fontSize: 32)),
                       const SizedBox(height: 4),
                       Text(
-                        item.nameEn,
+                        widget.isUrdu && item.nameUr.isNotEmpty ? item.nameUr : item.nameEn,
                         style: const TextStyle(fontSize: 14, fontWeight: FontWeight.bold),
                         textAlign: TextAlign.center,
                         maxLines: 1,
@@ -1017,40 +1238,62 @@ class _PosTerminalViewState extends State<PosTerminalView> {
   }
 
   Future<void> _completePayment(String method, bool isPaid, {required bool printReceipt}) async {
-    await DatabaseHelper.instance.processSale(
-      cartItems: widget.cart,
-      paymentMethod: method,
-      tokenNo: widget.tokenNo,
-      orderType: selectedOrderType,
-      isPaid: isPaid,
-      mobile: mobileCtrl.text.isNotEmpty ? mobileCtrl.text : null,
-      address: addressCtrl.text.isNotEmpty ? addressCtrl.text : null,
-    );
+    final itemsForReceipt = widget.cart
+        .map((item) => CartItem(item: item.item, quantity: item.quantity, customPrice: item.customPrice))
+        .toList();
+    final amountToSave = grandTotal;
+    final customerMobile = mobileCtrl.text.trim();
+    final customerAddress = addressCtrl.text.trim();
+    final savedOrderType = selectedOrderType;
 
-    if (!mounted) return;
-
-    if (printReceipt) {
-      showModalBottomSheet(
-        context: context,
-        isScrollControlled: true,
-        builder: (ctx) => ReceiptPreviewModal(
-          cartItems: List.from(widget.cart),
-          total: grandTotal,
-          paymentMethod: method,
-          tokenNo: widget.tokenNo,
-          isPaid: isPaid,
-          orderType: selectedOrderType,
-          mobile: mobileCtrl.text,
-          isUrdu: widget.isUrdu,
-        ),
+    try {
+      final billNo = await DatabaseHelper.instance.processSale(
+        cartItems: itemsForReceipt,
+        paymentMethod: method,
+        tokenNo: widget.tokenNo,
+        orderType: selectedOrderType,
+        isPaid: isPaid,
+        finalTotal: amountToSave,
+        mobile: customerMobile.isNotEmpty ? customerMobile : null,
+        address: customerAddress.isNotEmpty ? customerAddress : null,
       );
-    } else {
+
+      if (!mounted) return;
+
+      if (printReceipt) {
+        showModalBottomSheet(
+          context: context,
+          isScrollControlled: true,
+          builder: (ctx) => ReceiptPreviewModal(
+            cartItems: itemsForReceipt,
+            total: amountToSave,
+            billNo: billNo,
+            paymentMethod: method,
+            tokenNo: widget.tokenNo,
+            isPaid: isPaid,
+            orderType: savedOrderType,
+            mobile: customerMobile,
+            isUrdu: widget.isUrdu,
+          ),
+        );
+      } else {
+        ScaffoldMessenger.of(context).showSnackBar(
+          SnackBar(content: Text('Transaction $billNo saved successfully!'), backgroundColor: Colors.green),
+        );
+      }
+
+      widget.onCheckoutSuccess(savedOrderType);
+      mobileCtrl.clear();
+      addressCtrl.clear();
+      discount = 0;
+      discountCtrl.clear();
+      if (mounted) setState(() {});
+    } catch (e) {
+      if (!mounted) return;
       ScaffoldMessenger.of(context).showSnackBar(
-        const SnackBar(content: Text('Transaction saved successfully!'), backgroundColor: Colors.green),
+        SnackBar(content: Text('Could not save sale: $e'), backgroundColor: Colors.red),
       );
     }
-
-    widget.onCheckoutSuccess();
   }
 }
 
@@ -1103,11 +1346,17 @@ class TablesView extends StatelessWidget {
                       ],
                     ),
                     Text(openCount > 0 ? '$openCount Active' : 'Available', style: const TextStyle(fontSize: 14)),
+                    if (openCount > 0)
+                      ...tokens.where((t) => t.tableName == tableName).map((token) => OutlinedButton(onPressed: () => onSelectToken(token), child: Text('${token.tokenNo} · Rs. ${token.total.toStringAsFixed(0)}', overflow: TextOverflow.ellipsis))),
                     ElevatedButton(
                       onPressed: () {
+                        final existingNumbers = tokens.where((t) => t.tableName == tableName).map((t) => t.tokenNo).toSet();
+                        var sequence = 0;
+                        String tokenNo;
+                        do { tokenNo = 'T${index + 1}-${DateTime.now().millisecondsSinceEpoch}'; sequence++; } while (existingNumbers.contains(tokenNo));
                         final newToken = OrderToken(
-                          id: DateTime.now().toString(),
-                          tokenNo: '${index + 1}-${String.fromCharCode(65 + openCount)}',
+                          id: DateTime.now().microsecondsSinceEpoch.toString(),
+                          tokenNo: tokenNo,
                           tableName: tableName,
                           items: [],
                           timeSeated: DateTime.now(),
@@ -1209,14 +1458,21 @@ class _MenuManagementViewState extends State<MenuManagementView> {
                         },
                       ),
                       IconButton(
+                        tooltip: 'Configure stock recipe',
+                        icon: const Icon(Icons.science, color: Colors.deepPurple, size: 20),
+                        onPressed: () => _showRecipeDialog(item.id!, item.nameEn),
+                      ),
+                      IconButton(
                         icon: const Icon(Icons.edit, color: Colors.blue, size: 20),
                         onPressed: () => _showAddEditItemDialog(context, item: item),
                       ),
                       IconButton(
                         icon: const Icon(Icons.delete, color: Colors.red, size: 20),
                         onPressed: () async {
+                          final confirmed = await showDialog<bool>(context: context, builder: (ctx) => AlertDialog(title: const Text('Delete menu item?'), content: Text('Delete ${item.nameEn} and its recipe?'), actions: [TextButton(onPressed: () => Navigator.pop(ctx, false), child: const Text('Cancel')), FilledButton(onPressed: () => Navigator.pop(ctx, true), child: const Text('Delete'))]));
+                          if (confirmed != true) return;
                           await DatabaseHelper.instance.deleteMenuItem(item.id!);
-                          _refreshMenu();
+                          if (mounted) _refreshMenu();
                         },
                       ),
                     ],
@@ -1234,7 +1490,7 @@ class _MenuManagementViewState extends State<MenuManagementView> {
     final nameEnCtrl = TextEditingController(text: item?.nameEn ?? '');
     final nameUrCtrl = TextEditingController(text: item?.nameUr ?? '');
     final priceCtrl = TextEditingController(text: item != null ? item.price.toString() : '');
-    final iconCtrl = TextEditingController(text: item?.icon ?? '馃');
+    final iconCtrl = TextEditingController(text: item?.icon ?? '🍽️');
 
     showDialog(
       context: context,
@@ -1243,7 +1499,8 @@ class _MenuManagementViewState extends State<MenuManagementView> {
         content: Column(
           mainAxisSize: MainAxisSize.min,
           children: [
-            TextField(controller: nameEnCtrl, decoration: const InputDecoration(labelText: 'Item Name')),
+            TextField(controller: nameEnCtrl, decoration: const InputDecoration(labelText: 'Item Name (English)')),
+            TextField(controller: nameUrCtrl, decoration: const InputDecoration(labelText: 'Item Name (Urdu)')), 
             TextField(controller: priceCtrl, keyboardType: TextInputType.number, decoration: const InputDecoration(labelText: 'Price (Rs.)')),
             TextField(controller: iconCtrl, decoration: const InputDecoration(labelText: 'Emoji Icon')),
           ],
@@ -1261,8 +1518,13 @@ class _MenuManagementViewState extends State<MenuManagementView> {
                 inStock: item?.inStock ?? true,
               );
 
+              if (nameEnCtrl.text.trim().isEmpty || (double.tryParse(priceCtrl.text) ?? 0) < 0) {
+                ScaffoldMessenger.of(context).showSnackBar(const SnackBar(content: Text('Enter a valid item name and non-negative price.')));
+                return;
+              }
+              int? createdId = item?.id;
               if (item == null) {
-                await DatabaseHelper.instance.addMenuItem(newItem);
+                createdId = await DatabaseHelper.instance.addMenuItem(newItem);
               } else {
                 await DatabaseHelper.instance.updateMenuItem(newItem);
               }
@@ -1270,6 +1532,9 @@ class _MenuManagementViewState extends State<MenuManagementView> {
               if (!mounted) return;
               Navigator.pop(ctx);
               _refreshMenu();
+              if (item == null && createdId != null) {
+                await _showRecipeDialog(createdId, newItem.nameEn);
+              }
             },
             child: const Text('Save'),
           ),
@@ -1366,8 +1631,10 @@ class _InventoryViewState extends State<InventoryView> {
                       IconButton(
                         icon: const Icon(Icons.delete_forever, color: Colors.red, size: 24),
                         onPressed: () async {
+                          final confirmed = await showDialog<bool>(context: context, builder: (ctx) => AlertDialog(title: const Text('Delete inventory item?'), content: Text('Delete ${item.name} and remove it from all recipes?'), actions: [TextButton(onPressed: () => Navigator.pop(ctx, false), child: const Text('Cancel')), FilledButton(onPressed: () => Navigator.pop(ctx, true), child: const Text('Delete'))]));
+                          if (confirmed != true) return;
                           await DatabaseHelper.instance.deleteInventoryItem(item.id!);
-                          _refreshStock();
+                          if (mounted) _refreshStock();
                         },
                       ),
                     ],
@@ -1594,8 +1861,10 @@ class _ReportsAndSalesHistoryViewState extends State<ReportsAndSalesHistoryView>
                                   IconButton(
                                     icon: const Icon(Icons.delete, color: Colors.red, size: 20),
                                     onPressed: () async {
+                                      final confirmed = await showDialog<bool>(context: context, builder: (ctx) => AlertDialog(title: const Text('Delete sale record?'), content: Text('Delete ${sale.billNo}? Stock deducted by this sale will be restored.'), actions: [TextButton(onPressed: () => Navigator.pop(ctx, false), child: const Text('Cancel')), FilledButton(onPressed: () => Navigator.pop(ctx, true), child: const Text('Delete'))]));
+                                      if (confirmed != true) return;
                                       await DatabaseHelper.instance.deleteSale(sale.id!);
-                                      _refreshSales();
+                                      if (mounted) _refreshSales();
                                     },
                                   ),
                                 ],
@@ -1649,7 +1918,7 @@ class _ReportsAndSalesHistoryViewState extends State<ReportsAndSalesHistoryView>
   Widget _buildSummaryCard(String title, String value, Color color) {
     return Expanded(
       child: Card(
-        color: color.withOpacity(0.1),
+        color: color.withValues(alpha: 0.1),
         child: Padding(
           padding: const EdgeInsets.all(8.0),
           child: Column(
@@ -1699,6 +1968,7 @@ class _SettingsViewState extends State<SettingsView> {
   void _loadValues() async {
     nameCtrl.text = await DatabaseHelper.instance.getSetting('shop_name', defaultValue: 'Bismillah Shereen Mehal Samosa POS');
     addressCtrl.text = await DatabaseHelper.instance.getSetting('shop_address', defaultValue: 'Main Chowk, Layyah');
+    if (!mounted) return;
     phoneCtrl.text = await DatabaseHelper.instance.getSetting('shop_phone', defaultValue: '+92 300 1234567');
     accountInfoCtrl.text = await DatabaseHelper.instance.getSetting('payment_account_info', defaultValue: 'EasyPaisa/JazzCash: 03001234567');
 
@@ -1706,6 +1976,7 @@ class _SettingsViewState extends State<SettingsView> {
     String t = await DatabaseHelper.instance.getSetting('enable_takeaway', defaultValue: '1');
     String del = await DatabaseHelper.instance.getSetting('enable_delivery', defaultValue: '1');
 
+    if (!mounted) return;
     setState(() {
       enableDineIn = d == '1';
       enableTakeaway = t == '1';
@@ -1754,7 +2025,7 @@ class _SettingsViewState extends State<SettingsView> {
           style: ElevatedButton.styleFrom(backgroundColor: Colors.blue, padding: const EdgeInsets.symmetric(vertical: 14)),
           onPressed: () async {
             String dbPath = await DatabaseHelper.instance.getDatabasePath();
-            await Share.shareXFiles([XFile(dbPath)], text: 'Bismillah Samosa POS Database Backup');
+            await SharePlus.instance.share(ShareParams(files: [XFile(dbPath)], text: 'Bismillah Samosa POS Database Backup'));
           },
           icon: const Icon(Icons.backup, color: Colors.white),
           label: const Text('Backup Database File', style: TextStyle(color: Colors.white, fontSize: 16)),
@@ -1792,6 +2063,7 @@ class ReceiptPreviewModal extends StatefulWidget {
   final List<CartItem> cartItems;
   final double total;
   final String paymentMethod;
+  final String billNo;
   final String tokenNo;
   final bool isPaid;
   final String orderType;
@@ -1803,6 +2075,7 @@ class ReceiptPreviewModal extends StatefulWidget {
     required this.cartItems,
     required this.total,
     required this.paymentMethod,
+    required this.billNo,
     required this.tokenNo,
     required this.isPaid,
     required this.orderType,
@@ -1832,6 +2105,7 @@ class _ReceiptPreviewModalState extends State<ReceiptPreviewModal> {
     shopAddress = await DatabaseHelper.instance.getSetting('shop_address', defaultValue: 'Main Chowk, Layyah');
     shopPhone = await DatabaseHelper.instance.getSetting('shop_phone', defaultValue: '+92 300 1234567');
     accountInfo = await DatabaseHelper.instance.getSetting('payment_account_info', defaultValue: 'EasyPaisa/JazzCash: 03001234567');
+    if (!mounted) return;
     setState(() {});
   }
 
@@ -1846,15 +2120,16 @@ class _ReceiptPreviewModalState extends State<ReceiptPreviewModal> {
       final file = await File('${tempDir.path}/receipt_${DateTime.now().millisecondsSinceEpoch}.png').create();
       await file.writeAsBytes(pngBytes);
 
-      await Share.shareXFiles([XFile(file.path)], text: 'Receipt from $shopName');
+      await SharePlus.instance.share(ShareParams(files: [XFile(file.path)], text: 'Receipt from $shopName'));
     } catch (e) {
+      if (!mounted) return;
       ScaffoldMessenger.of(context).showSnackBar(SnackBar(content: Text('Failed to share image: $e')));
     }
   }
 
   @override
   Widget build(BuildContext context) {
-    String billNo = 'INV-${DateTime.now().millisecondsSinceEpoch.toString().substring(7)}';
+    final billNo = widget.billNo;
 
     return Container(
       padding: const EdgeInsets.all(16),
