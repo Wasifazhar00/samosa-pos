@@ -1,27 +1,17 @@
 name: samosa_pos
-description: "Bismillah Shereen Mehal Samosa POS"
-publish_to: 'none'
+description: Bismillah Samosa Point POS
 version: 1.0.0+1
 
 environment:
-  sdk: '>=3.0.0 <4.0.0'
+  sdk: ">=3.0.0 <4.0.0"
 
 dependencies:
   flutter:
     sdk: flutter
+  path: ^1.9.0
+  path_provider: ^2.1.0
   sqflite: ^2.3.0
   sqflite_common_ffi: ^2.3.0
-  path: ^1.8.3
-  path_provider: ^2.1.2
   qr_flutter: ^4.1.0
-  barcode_widget: ^2.0.4
-  pdf: ^3.10.4
-  printing: ^5.11.0
-  share_plus: ^10.0.0
-
-dev_dependencies:
-  flutter_test:
-    sdk: flutter
-
-flutter:
-  uses-material-design: true
+  barcode_widget: ^2.0.0
+  share_plus: ^7.1.0
