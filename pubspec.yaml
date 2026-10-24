@@ -1,5 +1,5 @@
 name: samosa_pos
-description: "Offline-First Samosa Shop POS"
+description: "Bismillah Shereen Mehal Samosa POS"
 publish_to: 'none'
 version: 1.0.0+1
 
@@ -16,6 +16,7 @@ dependencies:
   barcode_widget: ^2.0.4
   pdf: ^3.10.4
   printing: ^5.11.0
+  share_plus: ^10.0.0
 
 dev_dependencies:
   flutter_test:
