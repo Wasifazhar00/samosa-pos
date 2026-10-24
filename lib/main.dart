@@ -11,7 +11,6 @@ import 'package:share_plus/share_plus.dart';
 void main() async {
   WidgetsFlutterBinding.ensureInitialized();
 
-  // Desktop SQLite Initialization
   if (Platform.isWindows || Platform.isLinux || Platform.isMacOS) {
     sqfliteFfiInit();
     databaseFactory = databaseFactoryFfi;
@@ -98,6 +97,7 @@ class SaleRecord {
   final String billNo;
   final String tokenNo;
   final String orderType;
+  final String itemsSummary;
   final String? customerMobile;
   final String? customerAddress;
   final double totalAmount;
@@ -110,6 +110,7 @@ class SaleRecord {
     required this.billNo,
     required this.tokenNo,
     required this.orderType,
+    required this.itemsSummary,
     this.customerMobile,
     this.customerAddress,
     required this.totalAmount,
@@ -123,6 +124,7 @@ class SaleRecord {
         billNo: map['bill_no'],
         tokenNo: map['token_no'],
         orderType: map['order_type'] ?? 'Dine-In',
+        itemsSummary: map['items_summary'] ?? '',
         customerMobile: map['customer_mobile'],
         customerAddress: map['customer_address'],
         totalAmount: (map['total_amount'] as num).toDouble(),
@@ -161,7 +163,7 @@ class DatabaseHelper {
 
   Future<Database> get database async {
     if (_database != null) return _database!;
-    _database = await _initDB('bismillah_samosa_pos_v2.db');
+    _database = await _initDB('bismillah_samosa_pos_v7.db');
     return _database!;
   }
 
@@ -212,6 +214,7 @@ class DatabaseHelper {
         bill_no TEXT,
         token_no TEXT,
         order_type TEXT,
+        items_summary TEXT,
         customer_mobile TEXT,
         customer_address TEXT,
         total_amount REAL,
@@ -247,11 +250,11 @@ class DatabaseHelper {
     int alooId = await db.insert('inventory', {'name': 'Aloo Filling', 'stock_qty': 50, 'unit': 'kg'});
     int cokeId = await db.insert('inventory', {'name': 'Cold Drink (Coke)', 'stock_qty': 40, 'unit': 'bottles'});
 
-    int m1 = await db.insert('menu', {'name_en': 'Chicken Samosa', 'name_ur': 'چکن سموسہ', 'price': 50, 'icon': '🍗', 'in_stock': 1});
-    int m2 = await db.insert('menu', {'name_en': 'Aloo Samosa', 'name_ur': 'آلو سموسہ', 'price': 30, 'icon': '🥔', 'in_stock': 1});
-    int m3 = await db.insert('menu', {'name_en': 'Single Plate', 'name_ur': 'سنگل پلیٹ', 'price': 80, 'icon': '🍽️', 'in_stock': 1});
-    int m4 = await db.insert('menu', {'name_en': 'Double Plate', 'name_ur': 'ڈبل پلیٹ', 'price': 140, 'icon': '🍱', 'in_stock': 1});
-    int m5 = await db.insert('menu', {'name_en': 'Cold Drink', 'name_ur': 'کولڈ ڈرنک', 'price': 70, 'icon': '🥤', 'in_stock': 1});
+    int m1 = await db.insert('menu', {'name_en': 'Chicken Samosa', 'name_ur': '趩讴賳 爻賲賵爻蹃', 'price': 50, 'icon': '馃崡', 'in_stock': 1});
+    int m2 = await db.insert('menu', {'name_en': 'Aloo Samosa', 'name_ur': '丌賱賵 爻賲賵爻蹃', 'price': 30, 'icon': '馃', 'in_stock': 1});
+    int m3 = await db.insert('menu', {'name_en': 'Single Plate', 'name_ur': '爻賳诏賱 倬賱蹖俟', 'price': 80, 'icon': '馃嵔锔�', 'in_stock': 1});
+    int m4 = await db.insert('menu', {'name_en': 'Double Plate', 'name_ur': '趫亘賱 倬賱蹖俟', 'price': 140, 'icon': '馃嵄', 'in_stock': 1});
+    int m5 = await db.insert('menu', {'name_en': 'Cold Drink', 'name_ur': '讴賵賱趫 趫乇賳讴', 'price': 70, 'icon': '馃イ', 'in_stock': 1});
 
     await db.insert('recipes', {'menu_id': m1, 'inventory_id': patiId, 'required_qty': 1});
     await db.insert('recipes', {'menu_id': m1, 'inventory_id': chickenId, 'required_qty': 0.05});
@@ -270,7 +273,6 @@ class DatabaseHelper {
     await db.insert('recipes', {'menu_id': m5, 'inventory_id': cokeId, 'required_qty': 1});
   }
 
-  // --- MENU CRUD ---
   Future<List<MenuItem>> getMenuItems() async {
     final db = await instance.database;
     final result = await db.query('menu');
@@ -292,7 +294,6 @@ class DatabaseHelper {
     return await db.delete('menu', where: 'id = ?', whereArgs: [id]);
   }
 
-  // --- INVENTORY CRUD (DELETE SUPPORT ADDED) ---
   Future<List<InventoryItem>> getInventory() async {
     final db = await instance.database;
     final result = await db.query('inventory');
@@ -314,7 +315,6 @@ class DatabaseHelper {
     return await db.rawUpdate('UPDATE inventory SET stock_qty = ? WHERE id = ?', [newQty, id]);
   }
 
-  // --- SALES & TRANSACTIONS CRUD ---
   Future<List<SaleRecord>> getAllSales() async {
     final db = await instance.database;
     final result = await db.query('sales', orderBy: 'id DESC');
@@ -326,7 +326,11 @@ class DatabaseHelper {
     await db.update('sales', {'is_paid': isPaid ? 1 : 0}, where: 'id = ?', whereArgs: [saleId]);
   }
 
-  // Process Sales
+  Future<void> deleteSale(int saleId) async {
+    final db = await instance.database;
+    await db.delete('sales', where: 'id = ?', whereArgs: [saleId]);
+  }
+
   Future<void> processSale({
     required List<CartItem> cartItems,
     required String paymentMethod,
@@ -340,9 +344,11 @@ class DatabaseHelper {
 
     await db.transaction((txn) async {
       double grandTotal = 0;
+      List<String> itemNames = [];
 
       for (var cart in cartItems) {
         grandTotal += cart.total;
+        itemNames.add('${cart.quantity}x ${cart.item.nameEn}');
 
         final recipes = await txn.query('recipes', where: 'menu_id = ?', whereArgs: [cart.item.id]);
 
@@ -359,6 +365,7 @@ class DatabaseHelper {
         'bill_no': 'INV-${DateTime.now().millisecondsSinceEpoch.toString().substring(7)}',
         'token_no': tokenNo,
         'order_type': orderType,
+        'items_summary': itemNames.join(', '),
         'customer_mobile': mobile,
         'customer_address': address,
         'total_amount': grandTotal,
@@ -369,7 +376,6 @@ class DatabaseHelper {
     });
   }
 
-  // --- SETTINGS CRUD ---
   Future<String> getSetting(String key, {String defaultValue = ''}) async {
     final db = await instance.database;
     final result = await db.query('settings', where: 'key = ?', whereArgs: [key]);
@@ -382,6 +388,11 @@ class DatabaseHelper {
   Future<void> setSetting(String key, String value) async {
     final db = await instance.database;
     await db.insert('settings', {'key': key, 'value': value}, conflictAlgorithm: ConflictAlgorithm.replace);
+  }
+
+  Future<String> getDatabasePath() async {
+    final dbPath = await getDatabasesPath();
+    return p.join(dbPath, 'bismillah_samosa_pos_v7.db');
   }
 }
 
@@ -421,7 +432,7 @@ class _SamosaPosAppState extends State<SamosaPosApp> {
 }
 
 /* ============================================================================
- * MAIN POS CONTAINER SCREEN
+ * MAIN POS SCREEN CONTAINER
  * ========================================================================= */
 class MainPosScreen extends StatefulWidget {
   final bool isUrdu;
@@ -460,19 +471,20 @@ class _MainPosScreenState extends State<MainPosScreen> {
       appBar: AppBar(
         backgroundColor: Theme.of(context).colorScheme.primary,
         title: Text(
-          widget.isUrdu ? 'بسم اللہ شیریں محل سموسہ POS' : shopName,
-          style: const TextStyle(fontWeight: FontWeight.bold, color: Colors.white, fontSize: 20),
+          widget.isUrdu ? '亘爻賲 丕賱賱蹃 卮蹖乇蹖诤 賲丨賱 爻賲賵爻蹃 POS' : shopName,
+          style: const TextStyle(fontWeight: FontWeight.bold, color: Colors.white, fontSize: 18),
+          overflow: TextOverflow.ellipsis,
         ),
         actions: [
           Padding(
-            padding: const EdgeInsets.symmetric(horizontal: 8.0),
+            padding: const EdgeInsets.symmetric(horizontal: 6.0),
             child: ElevatedButton.icon(
-              style: ElevatedButton.styleFrom(backgroundColor: Colors.white),
+              style: ElevatedButton.styleFrom(backgroundColor: Colors.white, padding: const EdgeInsets.symmetric(horizontal: 10)),
               onPressed: widget.onToggleLanguage,
-              icon: const Icon(Icons.language, color: Colors.black),
+              icon: const Icon(Icons.language, color: Colors.black, size: 20),
               label: Text(
-                widget.isUrdu ? 'English' : 'اردو',
-                style: const TextStyle(fontWeight: FontWeight.bold, color: Colors.black, fontSize: 16),
+                widget.isUrdu ? 'English' : '丕乇丿賵',
+                style: const TextStyle(fontWeight: FontWeight.bold, color: Colors.black, fontSize: 14),
               ),
             ),
           ),
@@ -523,28 +535,28 @@ class _MainPosScreenState extends State<MainPosScreen> {
         onDestinationSelected: (idx) => setState(() => _selectedIndex = idx),
         destinations: [
           NavigationDestination(
-            icon: const Icon(Icons.point_of_sale, size: 28),
-            label: widget.isUrdu ? 'آرڈر (POS)' : 'POS Order',
+            icon: const Icon(Icons.point_of_sale),
+            label: widget.isUrdu ? '丌乇趫乇' : 'POS',
           ),
           NavigationDestination(
-            icon: const Icon(Icons.table_restaurant, size: 28),
-            label: widget.isUrdu ? 'ٹیبلز' : 'Tables',
+            icon: const Icon(Icons.table_restaurant),
+            label: widget.isUrdu ? '俟蹖亘賱夭' : 'Tables',
           ),
           NavigationDestination(
-            icon: const Icon(Icons.restaurant_menu, size: 28),
-            label: widget.isUrdu ? 'مینو' : 'Menu Edit',
+            icon: const Icon(Icons.restaurant_menu),
+            label: widget.isUrdu ? '賲蹖賳賵' : 'Menu',
           ),
           NavigationDestination(
-            icon: const Icon(Icons.inventory, size: 28),
-            label: widget.isUrdu ? 'سٹاک' : 'Inventory',
+            icon: const Icon(Icons.inventory),
+            label: widget.isUrdu ? '爻俟丕讴' : 'Stock',
           ),
           NavigationDestination(
-            icon: const Icon(Icons.receipt_long, size: 28),
-            label: widget.isUrdu ? 'سیل ہسٹری' : 'Sales History',
+            icon: const Icon(Icons.receipt_long),
+            label: widget.isUrdu ? '乇倬賵乇俟爻' : 'Reports',
           ),
           NavigationDestination(
-            icon: const Icon(Icons.settings, size: 28),
-            label: widget.isUrdu ? 'سیٹنگز' : 'Settings',
+            icon: const Icon(Icons.settings),
+            label: widget.isUrdu ? '爻蹖俟賳诏夭' : 'Settings',
           ),
         ],
       ),
@@ -553,7 +565,7 @@ class _MainPosScreenState extends State<MainPosScreen> {
 }
 
 /* ============================================================================
- * VIEW 1: POS TERMINAL VIEW (DINE-IN / TAKEAWAY / DELIVERY & FLEXIBLE FORM)
+ * VIEW 1: POS TERMINAL VIEW
  * ========================================================================= */
 class PosTerminalView extends StatefulWidget {
   final bool isUrdu;
@@ -622,232 +634,296 @@ class _PosTerminalViewState extends State<PosTerminalView> {
 
   @override
   Widget build(BuildContext context) {
-    return Row(
-      children: [
-        // Left Menu Grid
-        Expanded(
-          flex: 3,
-          child: FutureBuilder<List<MenuItem>>(
-            future: _menuItemsFuture,
-            builder: (context, snapshot) {
-              if (!snapshot.hasData) return const Center(child: CircularProgressIndicator());
+    return LayoutBuilder(
+      builder: (context, constraints) {
+        bool isMobilePortrait = constraints.maxWidth < 600;
 
-              final items = snapshot.data!;
-              return GridView.builder(
-                padding: const EdgeInsets.all(12),
-                gridDelegate: const SliverGridDelegateWithFixedCrossAxisCount(
-                  crossAxisCount: 3,
-                  childAspectRatio: 1.1,
-                  crossAxisSpacing: 12,
-                  mainAxisSpacing: 12,
-                ),
-                itemCount: items.length,
-                itemBuilder: (context, index) {
-                  final item = items[index];
-                  return Card(
-                    elevation: 4,
-                    shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(16)),
-                    color: item.inStock ? Colors.orange.shade50 : Colors.grey.shade300,
-                    child: InkWell(
-                      borderRadius: BorderRadius.circular(16),
-                      onTap: item.inStock ? () => widget.onAddToCart(item) : null,
-                      child: Column(
-                        mainAxisAlignment: MainAxisAlignment.center,
+        if (isMobilePortrait) {
+          return Column(
+            children: [
+              _buildOrderTypeSelector(),
+              Expanded(
+                flex: 3,
+                child: _buildMenuGrid(crossAxisCount: 2),
+              ),
+              Card(
+                margin: const EdgeInsets.all(4),
+                elevation: 6,
+                color: Colors.white,
+                child: Padding(
+                  padding: const EdgeInsets.all(8.0),
+                  child: Column(
+                    mainAxisSize: MainAxisSize.min,
+                    children: [
+                      Row(
+                        mainAxisAlignment: MainAxisAlignment.spaceBetween,
                         children: [
-                          Text(item.icon, style: const TextStyle(fontSize: 44)),
-                          const SizedBox(height: 6),
-                          Text(
-                            widget.isUrdu ? item.nameUr : item.nameEn,
-                            style: const TextStyle(fontSize: 18, fontWeight: FontWeight.bold),
-                            textAlign: TextAlign.center,
+                          Text('Cart (${widget.cart.length} items)', style: const TextStyle(fontWeight: FontWeight.bold, fontSize: 16)),
+                          Text('TOTAL: Rs. ${grandTotal.toStringAsFixed(0)}', style: const TextStyle(fontSize: 18, fontWeight: FontWeight.bold, color: Colors.green)),
+                        ],
+                      ),
+                      const SizedBox(height: 6),
+                      Row(
+                        children: [
+                          Expanded(
+                            child: OutlinedButton(
+                              onPressed: widget.onClearCart,
+                              child: Text(widget.isUrdu ? '讴蹖賳爻賱' : 'Cancel', style: const TextStyle(color: Colors.red)),
+                            ),
                           ),
-                          Text(
-                            item.inStock ? 'Rs. ${item.price.toStringAsFixed(0)}' : 'OUT OF STOCK',
-                            style: TextStyle(
-                              fontSize: 16,
-                              color: item.inStock ? Theme.of(context).colorScheme.primary : Colors.red,
-                              fontWeight: FontWeight.bold,
+                          const SizedBox(width: 8),
+                          Expanded(
+                            flex: 2,
+                            child: ElevatedButton(
+                              style: ElevatedButton.styleFrom(backgroundColor: Colors.green),
+                              onPressed: widget.cart.isEmpty ? null : () => _showCheckoutDialog(context),
+                              child: Text(
+                                widget.isUrdu ? '趩蹖讴 丌丐俟' : 'Checkout Options',
+                                style: const TextStyle(color: Colors.white, fontWeight: FontWeight.bold),
+                              ),
                             ),
                           ),
                         ],
                       ),
-                    ),
-                  );
-                },
-              );
-            },
-          ),
-        ),
-
-        // Right Cart View
-        Expanded(
-          flex: 2,
-          child: Card(
-            margin: const EdgeInsets.all(8),
-            elevation: 6,
-            child: Padding(
-              padding: const EdgeInsets.all(12.0),
-              child: Column(
-                children: [
-                  // Order Type Toggle
-                  SegmentedButton<String>(
-                    segments: [
-                      if (enableDineIn) const ButtonSegment(value: 'Dine-In', label: Text('Dine-In')),
-                      if (enableTakeaway) const ButtonSegment(value: 'Takeaway', label: Text('Takeaway')),
-                      if (enableDelivery) const ButtonSegment(value: 'Delivery', label: Text('Delivery')),
-                    ],
-                    selected: {selectedOrderType},
-                    onSelectionChanged: (val) => setState(() => selectedOrderType = val.first),
-                  ),
-                  const SizedBox(height: 8),
-
-                  // Delivery Mode Details (ONLY MOBILE IS MANDATORY)
-                  if (selectedOrderType == 'Delivery') ...[
-                    TextField(
-                      controller: mobileCtrl,
-                      keyboardType: TextInputType.phone,
-                      decoration: const InputDecoration(
-                        labelText: 'Mobile Number (Compulsory *)',
-                        prefixIcon: Icon(Icons.phone),
-                        border: OutlineInputBorder(),
-                        isDense: true,
-                      ),
-                    ),
-                    const SizedBox(height: 6),
-                    TextField(
-                      controller: addressCtrl,
-                      decoration: const InputDecoration(
-                        labelText: 'Delivery Address (Optional)',
-                        prefixIcon: Icon(Icons.home),
-                        border: OutlineInputBorder(),
-                        isDense: true,
-                      ),
-                    ),
-                    const SizedBox(height: 8),
-                  ],
-
-                  Expanded(
-                    child: widget.cart.isEmpty
-                        ? Center(
-                            child: Text(
-                              widget.isUrdu ? 'کارٹ خالی ہے' : 'Cart is empty',
-                              style: const TextStyle(fontSize: 18, color: Colors.grey),
-                            ),
-                          )
-                        : ListView.separated(
-                            itemCount: widget.cart.length,
-                            separatorBuilder: (c, i) => const Divider(),
-                            itemBuilder: (context, index) {
-                              final cartItem = widget.cart[index];
-                              return ListTile(
-                                title: Text(
-                                  widget.isUrdu ? cartItem.item.nameUr : cartItem.item.nameEn,
-                                  style: const TextStyle(fontSize: 18, fontWeight: FontWeight.bold),
-                                ),
-                                subtitle: Text('Rs. ${cartItem.customPrice} x ${cartItem.quantity}'),
-                                trailing: Row(
-                                  mainAxisSize: MainAxisSize.min,
-                                  children: [
-                                    Text(
-                                      'Rs. ${cartItem.total.toStringAsFixed(0)}',
-                                      style: const TextStyle(fontSize: 18, fontWeight: FontWeight.bold),
-                                    ),
-                                    IconButton(
-                                      icon: const Icon(Icons.remove_circle, color: Colors.red),
-                                      onPressed: () {
-                                        setState(() {
-                                          if (cartItem.quantity > 1) {
-                                            cartItem.quantity--;
-                                          } else {
-                                            widget.cart.removeAt(index);
-                                          }
-                                        });
-                                      },
-                                    ),
-                                  ],
-                                ),
-                              );
-                            },
-                          ),
-                  ),
-
-                  // Discount Field
-                  Row(
-                    mainAxisAlignment: MainAxisAlignment.spaceBetween,
-                    children: [
-                      Text(widget.isUrdu ? 'ڈسکانٹ:' : 'Discount:'),
-                      SizedBox(
-                        width: 100,
-                        child: TextField(
-                          keyboardType: TextInputType.number,
-                          decoration: const InputDecoration(border: OutlineInputBorder(), isDense: true),
-                          onChanged: (v) => setState(() => discount = double.tryParse(v) ?? 0),
-                        ),
-                      ),
                     ],
                   ),
-                  const SizedBox(height: 8),
-
-                  Container(
-                    padding: const EdgeInsets.all(12),
-                    decoration: BoxDecoration(
-                      color: Colors.green.shade50,
-                      borderRadius: BorderRadius.circular(12),
-                    ),
-                    child: Row(
-                      mainAxisAlignment: MainAxisAlignment.spaceBetween,
+                ),
+              ),
+            ],
+          );
+        } else {
+          return Row(
+            children: [
+              Expanded(
+                flex: 3,
+                child: _buildMenuGrid(crossAxisCount: 3),
+              ),
+              Expanded(
+                flex: 2,
+                child: Card(
+                  margin: const EdgeInsets.all(8),
+                  elevation: 6,
+                  child: Padding(
+                    padding: const EdgeInsets.all(12.0),
+                    child: Column(
                       children: [
-                        Text(
-                          widget.isUrdu ? 'کل رقم:' : 'TOTAL:',
-                          style: const TextStyle(fontSize: 22, fontWeight: FontWeight.bold),
+                        _buildOrderTypeSelector(),
+                        const SizedBox(height: 8),
+                        if (selectedOrderType == 'Delivery') ...[
+                          TextField(
+                            controller: mobileCtrl,
+                            keyboardType: TextInputType.phone,
+                            decoration: const InputDecoration(
+                              labelText: 'Mobile Number (Required)',
+                              prefixIcon: Icon(Icons.phone),
+                              border: OutlineInputBorder(),
+                              isDense: true,
+                            ),
+                          ),
+                          const SizedBox(height: 6),
+                          TextField(
+                            controller: addressCtrl,
+                            decoration: const InputDecoration(
+                              labelText: 'Address (Optional)',
+                              prefixIcon: Icon(Icons.home),
+                              border: OutlineInputBorder(),
+                              isDense: true,
+                            ),
+                          ),
+                          const SizedBox(height: 8),
+                        ],
+                        Expanded(
+                          child: widget.cart.isEmpty
+                              ? Center(
+                                  child: Text(
+                                    widget.isUrdu ? '讴丕乇俟 禺丕賱蹖 蹃蹝' : 'Cart is empty',
+                                    style: const TextStyle(fontSize: 16, color: Colors.grey),
+                                  ),
+                                )
+                              : ListView.separated(
+                                  itemCount: widget.cart.length,
+                                  separatorBuilder: (c, i) => const Divider(height: 1),
+                                  itemBuilder: (context, index) {
+                                    final cartItem = widget.cart[index];
+                                    return ListTile(
+                                      dense: true,
+                                      title: Text(
+                                        widget.isUrdu ? cartItem.item.nameUr : cartItem.item.nameEn,
+                                        style: const TextStyle(fontSize: 16, fontWeight: FontWeight.bold),
+                                      ),
+                                      subtitle: Text('Rs. ${cartItem.customPrice} x ${cartItem.quantity}'),
+                                      trailing: Row(
+                                        mainAxisSize: MainAxisSize.min,
+                                        children: [
+                                          Text('Rs. ${cartItem.total.toStringAsFixed(0)}', style: const TextStyle(fontWeight: FontWeight.bold)),
+                                          IconButton(
+                                            icon: const Icon(Icons.remove_circle, color: Colors.red, size: 20),
+                                            onPressed: () {
+                                              setState(() {
+                                                if (cartItem.quantity > 1) {
+                                                  cartItem.quantity--;
+                                                } else {
+                                                  widget.cart.removeAt(index);
+                                                }
+                                              });
+                                            },
+                                          ),
+                                        ],
+                                      ),
+                                    );
+                                  },
+                                ),
                         ),
-                        Text(
-                          'Rs. ${grandTotal.toStringAsFixed(0)}',
-                          style: const TextStyle(fontSize: 28, fontWeight: FontWeight.bold, color: Colors.green),
+                        Row(
+                          mainAxisAlignment: MainAxisAlignment.spaceBetween,
+                          children: [
+                            Text(widget.isUrdu ? '趫爻讴丕賳俟:' : 'Discount:'),
+                            SizedBox(
+                              width: 90,
+                              child: TextField(
+                                keyboardType: TextInputType.number,
+                                decoration: const InputDecoration(border: OutlineInputBorder(), isDense: true),
+                                onChanged: (v) => setState(() => discount = double.tryParse(v) ?? 0),
+                              ),
+                            ),
+                          ],
+                        ),
+                        const SizedBox(height: 8),
+                        Container(
+                          padding: const EdgeInsets.all(10),
+                          decoration: BoxDecoration(color: Colors.green.shade50, borderRadius: BorderRadius.circular(10)),
+                          child: Row(
+                            mainAxisAlignment: MainAxisAlignment.spaceBetween,
+                            children: [
+                              Text(widget.isUrdu ? '讴賱 乇賯賲:' : 'TOTAL:', style: const TextStyle(fontSize: 18, fontWeight: FontWeight.bold)),
+                              Text('Rs. ${grandTotal.toStringAsFixed(0)}', style: const TextStyle(fontSize: 22, fontWeight: FontWeight.bold, color: Colors.green)),
+                            ],
+                          ),
+                        ),
+                        const SizedBox(height: 10),
+                        Row(
+                          children: [
+                            Expanded(
+                              child: ElevatedButton(
+                                style: ElevatedButton.styleFrom(backgroundColor: Colors.red, padding: const EdgeInsets.symmetric(vertical: 14)),
+                                onPressed: widget.onClearCart,
+                                child: Text(widget.isUrdu ? '讴蹖賳爻賱' : 'Cancel', style: const TextStyle(color: Colors.white, fontSize: 16)),
+                              ),
+                            ),
+                            const SizedBox(width: 8),
+                            Expanded(
+                              flex: 2,
+                              child: ElevatedButton(
+                                style: ElevatedButton.styleFrom(backgroundColor: Colors.green, padding: const EdgeInsets.symmetric(vertical: 14)),
+                                onPressed: widget.cart.isEmpty ? null : () => _showCheckoutDialog(context),
+                                child: Text(widget.isUrdu ? '趩蹖讴 丌丐俟' : 'Checkout Options', style: const TextStyle(color: Colors.white, fontSize: 16, fontWeight: FontWeight.bold)),
+                              ),
+                            ),
+                          ],
                         ),
                       ],
                     ),
                   ),
-                  const SizedBox(height: 12),
+                ),
+              ),
+            ],
+          );
+        }
+      },
+    );
+  }
 
-                  Row(
+  Widget _buildOrderTypeSelector() {
+    return Container(
+      padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 4),
+      child: SingleChildScrollView(
+        scrollDirection: Axis.horizontal,
+        child: Row(
+          mainAxisAlignment: MainAxisAlignment.center,
+          children: [
+            if (enableDineIn)
+              ChoiceChip(
+                label: const Text('Dine-In'),
+                selected: selectedOrderType == 'Dine-In',
+                onSelected: (s) => setState(() => selectedOrderType = 'Dine-In'),
+              ),
+            const SizedBox(width: 6),
+            if (enableTakeaway)
+              ChoiceChip(
+                label: const Text('Takeaway'),
+                selected: selectedOrderType == 'Takeaway',
+                onSelected: (s) => setState(() => selectedOrderType = 'Takeaway'),
+              ),
+            const SizedBox(width: 6),
+            if (enableDelivery)
+              ChoiceChip(
+                label: const Text('Delivery'),
+                selected: selectedOrderType == 'Delivery',
+                onSelected: (s) => setState(() => selectedOrderType = 'Delivery'),
+              ),
+          ],
+        ),
+      ),
+    );
+  }
+
+  Widget _buildMenuGrid({required int crossAxisCount}) {
+    return FutureBuilder<List<MenuItem>>(
+      future: _menuItemsFuture,
+      builder: (context, snapshot) {
+        if (!snapshot.hasData) return const Center(child: CircularProgressIndicator());
+
+        final items = snapshot.data!;
+        return GridView.builder(
+          padding: const EdgeInsets.all(8),
+          gridDelegate: SliverGridDelegateWithFixedCrossAxisCount(
+            crossAxisCount: crossAxisCount,
+            childAspectRatio: 1.1,
+            crossAxisSpacing: 8,
+            mainAxisSpacing: 8,
+          ),
+          itemCount: items.length,
+          itemBuilder: (context, index) {
+            final item = items[index];
+            return Card(
+              elevation: 3,
+              shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(12)),
+              color: item.inStock ? Colors.orange.shade50 : Colors.grey.shade300,
+              child: InkWell(
+                borderRadius: BorderRadius.circular(12),
+                onTap: item.inStock ? () => widget.onAddToCart(item) : null,
+                child: Padding(
+                  padding: const EdgeInsets.all(6.0),
+                  child: Column(
+                    mainAxisAlignment: MainAxisAlignment.center,
                     children: [
-                      Expanded(
-                        child: ElevatedButton(
-                          style: ElevatedButton.styleFrom(
-                            backgroundColor: Colors.red,
-                            padding: const EdgeInsets.symmetric(vertical: 16),
-                          ),
-                          onPressed: widget.onClearCart,
-                          child: Text(
-                            widget.isUrdu ? 'کینسل' : 'Cancel',
-                            style: const TextStyle(color: Colors.white, fontSize: 18),
-                          ),
-                        ),
+                      Text(item.icon, style: const TextStyle(fontSize: 32)),
+                      const SizedBox(height: 4),
+                      Text(
+                        widget.isUrdu ? item.nameUr : item.nameEn,
+                        style: const TextStyle(fontSize: 14, fontWeight: FontWeight.bold),
+                        textAlign: TextAlign.center,
+                        maxLines: 1,
+                        overflow: TextOverflow.ellipsis,
                       ),
-                      const SizedBox(width: 8),
-                      Expanded(
-                        flex: 2,
-                        child: ElevatedButton(
-                          style: ElevatedButton.styleFrom(
-                            backgroundColor: Colors.green,
-                            padding: const EdgeInsets.symmetric(vertical: 16),
-                          ),
-                          onPressed: widget.cart.isEmpty ? null : () => _showCheckoutDialog(context),
-                          child: Text(
-                            widget.isUrdu ? 'بل ادا کریں (Pay)' : 'Pay & Print',
-                            style: const TextStyle(color: Colors.white, fontSize: 18, fontWeight: FontWeight.bold),
+                      FittedBox(
+                        child: Text(
+                          item.inStock ? 'Rs. ${item.price.toStringAsFixed(0)}' : 'OUT OF STOCK',
+                          style: TextStyle(
+                            fontSize: 14,
+                            color: item.inStock ? Theme.of(context).colorScheme.primary : Colors.red,
+                            fontWeight: FontWeight.bold,
                           ),
                         ),
                       ),
                     ],
                   ),
-                ],
+                ),
               ),
-            ),
-          ),
-        ),
-      ],
+            );
+          },
+        );
+      },
     );
   }
 
@@ -862,34 +938,28 @@ class _PosTerminalViewState extends State<PosTerminalView> {
     showDialog(
       context: context,
       builder: (ctx) => AlertDialog(
-        title: Text(widget.isUrdu ? 'ادائیگی اور سٹیٹس' : 'Payment Method & Status'),
+        title: Text(widget.isUrdu ? '丕丿丕卅蹖诏蹖 讴丕 丕賳鬲禺丕亘 讴乇蹖诤' : 'Payment Method & Options'),
         content: Column(
           mainAxisSize: MainAxisSize.min,
           children: [
             ListTile(
-              leading: const Icon(Icons.check_circle, size: 36, color: Colors.green),
+              leading: const Icon(Icons.check_circle, size: 32, color: Colors.green),
               title: const Text('PAID (Cash)'),
-              onTap: () {
-                Navigator.pop(ctx);
-                _completePayment('Cash', true);
-              },
+              subtitle: const Text('Save transaction to record'),
+              onTap: () => _choosePrintOrSave(ctx, 'Cash', true),
             ),
             ListTile(
-              leading: const Icon(Icons.qr_code, size: 36, color: Colors.blue),
+              leading: const Icon(Icons.qr_code, size: 32, color: Colors.blue),
               title: const Text('PAID (Online / EasyPaisa / JazzCash)'),
-              onTap: () {
-                Navigator.pop(ctx);
-                _completePayment('Online', true);
-              },
+              subtitle: const Text('Save online transfer entry'),
+              onTap: () => _choosePrintOrSave(ctx, 'Online', true),
             ),
             const Divider(),
             ListTile(
-              leading: const Icon(Icons.cancel, size: 36, color: Colors.red),
-              title: const Text('UNPAID / UDHAR (قرض)'),
-              onTap: () {
-                Navigator.pop(ctx);
-                _completePayment('Unpaid', false);
-              },
+              leading: const Icon(Icons.cancel, size: 32, color: Colors.red),
+              title: const Text('UNPAID / UDHAR (賯乇囟)'),
+              subtitle: const Text('Record as uncollected balance'),
+              onTap: () => _choosePrintOrSave(ctx, 'Unpaid', false),
             ),
           ],
         ),
@@ -897,7 +967,39 @@ class _PosTerminalViewState extends State<PosTerminalView> {
     );
   }
 
-  void _completePayment(String method, bool isPaid) async {
+  void _choosePrintOrSave(BuildContext parentContext, String method, bool isPaid) {
+    Navigator.pop(parentContext);
+
+    showDialog(
+      context: context,
+      builder: (ctx) => AlertDialog(
+        title: const Text('Save or Print Bill?'),
+        content: const Text('Choose whether to only save the sale or print the receipt.'),
+        actions: [
+          ElevatedButton.icon(
+            style: ElevatedButton.styleFrom(backgroundColor: Colors.blue),
+            onPressed: () async {
+              Navigator.pop(ctx);
+              await _completePayment(method, isPaid, printReceipt: false);
+            },
+            icon: const Icon(Icons.save, color: Colors.white),
+            label: const Text('Save Only', style: TextStyle(color: Colors.white)),
+          ),
+          ElevatedButton.icon(
+            style: ElevatedButton.styleFrom(backgroundColor: Colors.green),
+            onPressed: () async {
+              Navigator.pop(ctx);
+              await _completePayment(method, isPaid, printReceipt: true);
+            },
+            icon: const Icon(Icons.print, color: Colors.white),
+            label: const Text('Pay & Print', style: TextStyle(color: Colors.white)),
+          ),
+        ],
+      ),
+    );
+  }
+
+  Future<void> _completePayment(String method, bool isPaid, {required bool printReceipt}) async {
     await DatabaseHelper.instance.processSale(
       cartItems: widget.cart,
       paymentMethod: method,
@@ -910,20 +1012,26 @@ class _PosTerminalViewState extends State<PosTerminalView> {
 
     if (!mounted) return;
 
-    showModalBottomSheet(
-      context: context,
-      isScrollControlled: true,
-      builder: (ctx) => ReceiptPreviewModal(
-        cartItems: List.from(widget.cart),
-        total: grandTotal,
-        paymentMethod: method,
-        tokenNo: widget.tokenNo,
-        isPaid: isPaid,
-        orderType: selectedOrderType,
-        mobile: mobileCtrl.text,
-        isUrdu: widget.isUrdu,
-      ),
-    );
+    if (printReceipt) {
+      showModalBottomSheet(
+        context: context,
+        isScrollControlled: true,
+        builder: (ctx) => ReceiptPreviewModal(
+          cartItems: List.from(widget.cart),
+          total: grandTotal,
+          paymentMethod: method,
+          tokenNo: widget.tokenNo,
+          isPaid: isPaid,
+          orderType: selectedOrderType,
+          mobile: mobileCtrl.text,
+          isUrdu: widget.isUrdu,
+        ),
+      );
+    } else {
+      ScaffoldMessenger.of(context).showSnackBar(
+        const SnackBar(content: Text('Transaction saved successfully!'), backgroundColor: Colors.green),
+      );
+    }
 
     widget.onCheckoutSuccess();
   }
@@ -943,57 +1051,59 @@ class TablesView extends StatelessWidget {
   Widget build(BuildContext context) {
     final tables = ['Table 1', 'Table 2', 'Table 3', 'Table 4', 'Table 5', 'Takeaway'];
 
-    return GridView.builder(
-      padding: const EdgeInsets.all(16),
-      gridDelegate: const SliverGridDelegateWithFixedCrossAxisCount(
-        crossAxisCount: 3,
-        childAspectRatio: 1.3,
-        crossAxisSpacing: 16,
-        mainAxisSpacing: 16,
-      ),
-      itemCount: tables.length,
-      itemBuilder: (context, index) {
-        final tableName = tables[index];
-        final openCount = tokens.where((t) => t.tableName == tableName).length;
+    return LayoutBuilder(
+      builder: (context, constraints) {
+        int columns = constraints.maxWidth < 600 ? 2 : 3;
+        return GridView.builder(
+          padding: const EdgeInsets.all(12),
+          gridDelegate: SliverGridDelegateWithFixedCrossAxisCount(
+            crossAxisCount: columns,
+            childAspectRatio: 1.2,
+            crossAxisSpacing: 12,
+            mainAxisSpacing: 12,
+          ),
+          itemCount: tables.length,
+          itemBuilder: (context, index) {
+            final tableName = tables[index];
+            final openCount = tokens.where((t) => t.tableName == tableName).length;
 
-        return Card(
-          elevation: 4,
-          color: openCount > 0 ? Colors.amber.shade100 : Colors.green.shade50,
-          child: Padding(
-            padding: const EdgeInsets.all(12.0),
-            child: Column(
-              mainAxisAlignment: MainAxisAlignment.spaceBetween,
-              children: [
-                Row(
+            return Card(
+              elevation: 3,
+              color: openCount > 0 ? Colors.amber.shade100 : Colors.green.shade50,
+              child: Padding(
+                padding: const EdgeInsets.all(8.0),
+                child: Column(
                   mainAxisAlignment: MainAxisAlignment.spaceBetween,
                   children: [
-                    Text(tableName, style: const TextStyle(fontSize: 22, fontWeight: FontWeight.bold)),
-                    Badge(
-                      label: Text('$openCount Open', style: const TextStyle(fontSize: 14)),
-                      backgroundColor: openCount > 0 ? Colors.orange : Colors.green,
+                    Row(
+                      mainAxisAlignment: MainAxisAlignment.spaceBetween,
+                      children: [
+                        Text(tableName, style: const TextStyle(fontSize: 18, fontWeight: FontWeight.bold)),
+                        Badge(
+                          label: Text('$openCount Open', style: const TextStyle(fontSize: 12)),
+                          backgroundColor: openCount > 0 ? Colors.orange : Colors.green,
+                        ),
+                      ],
+                    ),
+                    Text(openCount > 0 ? '$openCount Active' : 'Available', style: const TextStyle(fontSize: 14)),
+                    ElevatedButton(
+                      onPressed: () {
+                        final newToken = OrderToken(
+                          id: DateTime.now().toString(),
+                          tokenNo: '${index + 1}-${String.fromCharCode(65 + openCount)}',
+                          tableName: tableName,
+                          items: [],
+                          timeSeated: DateTime.now(),
+                        );
+                        onSelectToken(newToken);
+                      },
+                      child: Text(isUrdu ? '+ 賳蹖丕 讴爻俟賲乇' : '+ New Customer', style: const TextStyle(fontSize: 12)),
                     ),
                   ],
                 ),
-                Text(
-                  openCount > 0 ? '$openCount Active Customer(s)' : 'Available',
-                  style: const TextStyle(fontSize: 16),
-                ),
-                ElevatedButton(
-                  onPressed: () {
-                    final newToken = OrderToken(
-                      id: DateTime.now().toString(),
-                      tokenNo: '${index + 1}-${String.fromCharCode(65 + openCount)}',
-                      tableName: tableName,
-                      items: [],
-                      timeSeated: DateTime.now(),
-                    );
-                    onSelectToken(newToken);
-                  },
-                  child: Text(isUrdu ? '+ نیا کسٹمر' : '+ New Customer'),
-                ),
-              ],
-            ),
-          ),
+              ),
+            );
+          },
         );
       },
     );
@@ -1032,7 +1142,7 @@ class _MenuManagementViewState extends State<MenuManagementView> {
     return Scaffold(
       floatingActionButton: FloatingActionButton.extended(
         onPressed: () => _showAddEditItemDialog(context),
-        label: Text(widget.isUrdu ? 'نیا آئٹم شامل کریں' : 'Add New Menu Item'),
+        label: Text(widget.isUrdu ? '賳蹖丕 丌卅俟賲 卮丕賲賱 讴乇蹖诤' : 'Add Item'),
         icon: const Icon(Icons.add),
       ),
       body: FutureBuilder<List<MenuItem>>(
@@ -1042,15 +1152,15 @@ class _MenuManagementViewState extends State<MenuManagementView> {
 
           final items = snapshot.data!;
           return ListView.builder(
-            padding: const EdgeInsets.all(16),
+            padding: const EdgeInsets.all(12),
             itemCount: items.length,
             itemBuilder: (context, index) {
               final item = items[index];
               return Card(
                 child: ListTile(
-                  leading: Text(item.icon, style: const TextStyle(fontSize: 32)),
-                  title: Text('${item.nameEn} / ${item.nameUr}', style: const TextStyle(fontSize: 18, fontWeight: FontWeight.bold)),
-                  subtitle: Text('Price: Rs. ${item.price} | Status: ${item.inStock ? "In Stock" : "Out of Stock"}'),
+                  leading: Text(item.icon, style: const TextStyle(fontSize: 28)),
+                  title: Text('${item.nameEn} / ${item.nameUr}', style: const TextStyle(fontSize: 16, fontWeight: FontWeight.bold)),
+                  subtitle: Text('Rs. ${item.price} | ${item.inStock ? "In Stock" : "Out of Stock"}'),
                   trailing: Row(
                     mainAxisSize: MainAxisSize.min,
                     children: [
@@ -1069,11 +1179,11 @@ class _MenuManagementViewState extends State<MenuManagementView> {
                         },
                       ),
                       IconButton(
-                        icon: const Icon(Icons.edit, color: Colors.blue),
+                        icon: const Icon(Icons.edit, color: Colors.blue, size: 20),
                         onPressed: () => _showAddEditItemDialog(context, item: item),
                       ),
                       IconButton(
-                        icon: const Icon(Icons.delete, color: Colors.red),
+                        icon: const Icon(Icons.delete, color: Colors.red, size: 20),
                         onPressed: () async {
                           await DatabaseHelper.instance.deleteMenuItem(item.id!);
                           _refreshMenu();
@@ -1094,7 +1204,7 @@ class _MenuManagementViewState extends State<MenuManagementView> {
     final nameEnCtrl = TextEditingController(text: item?.nameEn ?? '');
     final nameUrCtrl = TextEditingController(text: item?.nameUr ?? '');
     final priceCtrl = TextEditingController(text: item != null ? item.price.toString() : '');
-    final iconCtrl = TextEditingController(text: item?.icon ?? '🥙');
+    final iconCtrl = TextEditingController(text: item?.icon ?? '馃');
 
     showDialog(
       context: context,
@@ -1141,7 +1251,7 @@ class _MenuManagementViewState extends State<MenuManagementView> {
 }
 
 /* ============================================================================
- * VIEW 4: INVENTORY VIEW (DELETE RAW MATERIALS SUPPORTED)
+ * VIEW 4: INVENTORY VIEW
  * ========================================================================= */
 class InventoryView extends StatefulWidget {
   final bool isUrdu;
@@ -1172,7 +1282,7 @@ class _InventoryViewState extends State<InventoryView> {
     return Scaffold(
       floatingActionButton: FloatingActionButton.extended(
         onPressed: () => _showAddStockDialog(context),
-        label: Text(widget.isUrdu ? 'نیا سٹاک شامل کریں' : 'Add Raw Material'),
+        label: Text(widget.isUrdu ? '賳蹖丕 爻俟丕讴' : 'Add Material'),
         icon: const Icon(Icons.add_box),
       ),
       body: FutureBuilder<List<InventoryItem>>(
@@ -1182,7 +1292,7 @@ class _InventoryViewState extends State<InventoryView> {
 
           final items = snapshot.data!;
           return ListView.builder(
-            padding: const EdgeInsets.all(16),
+            padding: const EdgeInsets.all(12),
             itemCount: items.length,
             itemBuilder: (context, index) {
               final item = items[index];
@@ -1193,24 +1303,23 @@ class _InventoryViewState extends State<InventoryView> {
                   leading: Icon(
                     Icons.inventory_2,
                     color: isLow ? Colors.red : Colors.green,
-                    size: 36,
+                    size: 28,
                   ),
-                  title: Text(item.name, style: const TextStyle(fontSize: 20, fontWeight: FontWeight.bold)),
+                  title: Text(item.name, style: const TextStyle(fontSize: 16, fontWeight: FontWeight.bold)),
                   subtitle: Text(isLow ? 'Low Stock Warning!' : 'Stock Available'),
                   trailing: Row(
                     mainAxisSize: MainAxisSize.min,
                     children: [
                       Text(
                         '${item.stockQty.toStringAsFixed(1)} ${item.unit}',
-                        style: TextStyle(fontSize: 20, fontWeight: FontWeight.bold, color: isLow ? Colors.red : Colors.black),
+                        style: TextStyle(fontSize: 16, fontWeight: FontWeight.bold, color: isLow ? Colors.red : Colors.black),
                       ),
                       IconButton(
-                        icon: const Icon(Icons.add_circle, color: Colors.green, size: 28),
+                        icon: const Icon(Icons.add_circle, color: Colors.green, size: 24),
                         onPressed: () => _showStockInDialog(context, item),
                       ),
-                      // DELETE BUTTON FOR RAW MATERIALS
                       IconButton(
-                        icon: const Icon(Icons.delete_forever, color: Colors.red, size: 28),
+                        icon: const Icon(Icons.delete_forever, color: Colors.red, size: 24),
                         onPressed: () async {
                           await DatabaseHelper.instance.deleteInventoryItem(item.id!);
                           _refreshStock();
@@ -1264,7 +1373,7 @@ class _InventoryViewState extends State<InventoryView> {
     showDialog(
       context: context,
       builder: (ctx) => AlertDialog(
-        title: const Text('Add New Raw Material'),
+        title: const Text('Add New Material'),
         content: Column(
           mainAxisSize: MainAxisSize.min,
           children: [
@@ -1295,7 +1404,7 @@ class _InventoryViewState extends State<InventoryView> {
 }
 
 /* ============================================================================
- * VIEW 5: SALES HISTORY & PAID/UNPAID CONTROL
+ * VIEW 5: REAL-TIME REPORTS & EDITABLE SALES HISTORY
  * ========================================================================= */
 class ReportsAndSalesHistoryView extends StatefulWidget {
   final bool isUrdu;
@@ -1335,68 +1444,74 @@ class _ReportsAndSalesHistoryViewState extends State<ReportsAndSalesHistoryView>
 
           return Column(
             children: [
-              // Summary Banner
               Padding(
-                padding: const EdgeInsets.all(12.0),
+                padding: const EdgeInsets.all(8.0),
                 child: Row(
                   children: [
                     _buildSummaryCard('Paid Sales', 'Rs. ${totalPaidSales.toStringAsFixed(0)}', Colors.green),
                     _buildSummaryCard('Unpaid / Udhar', 'Rs. ${totalUnpaidSales.toStringAsFixed(0)}', Colors.red),
-                    _buildSummaryCard('Total Bills', '${sales.length}', Colors.blue),
+                    _buildSummaryCard('Total Orders', '${sales.length}', Colors.blue),
                   ],
                 ),
               ),
-              const Divider(),
-
-              // Entry-Wise Sales History
+              const Divider(height: 1),
               Expanded(
-                child: ListView.builder(
-                  padding: const EdgeInsets.all(12),
-                  itemCount: sales.length,
-                  itemBuilder: (context, index) {
-                    final sale = sales[index];
-                    return Card(
-                      elevation: 3,
-                      child: ListTile(
-                        leading: CircleAvatar(
-                          backgroundColor: sale.isPaid ? Colors.green : Colors.red,
-                          child: Icon(sale.isPaid ? Icons.check : Icons.priority_high, color: Colors.white),
-                        ),
-                        title: Text('${sale.billNo} | Token: ${sale.tokenNo} (${sale.orderType})'),
-                        subtitle: Text(
-                          'Mobile: ${sale.customerMobile ?? "N/A"} | Date: ${sale.createdAt.substring(0, 16).replaceAll("T", " ")}',
-                        ),
-                        trailing: Row(
-                          mainAxisSize: MainAxisSize.min,
-                          children: [
-                            Text(
-                              'Rs. ${sale.totalAmount.toStringAsFixed(0)}',
-                              style: TextStyle(
-                                fontSize: 18,
-                                fontWeight: FontWeight.bold,
-                                color: sale.isPaid ? Colors.green : Colors.red,
+                child: sales.isEmpty
+                    ? const Center(child: Text('No sales recorded yet'))
+                    : ListView.builder(
+                        padding: const EdgeInsets.all(8),
+                        itemCount: sales.length,
+                        itemBuilder: (context, index) {
+                          final sale = sales[index];
+                          return Card(
+                            elevation: 2,
+                            child: ListTile(
+                              dense: true,
+                              leading: CircleAvatar(
+                                radius: 16,
+                                backgroundColor: sale.isPaid ? Colors.green : Colors.red,
+                                child: Icon(sale.isPaid ? Icons.check : Icons.priority_high, color: Colors.white, size: 16),
+                              ),
+                              title: Text(
+                                '${sale.billNo} | ${sale.tokenNo} (${sale.orderType})',
+                                style: const TextStyle(fontWeight: FontWeight.bold),
+                              ),
+                              subtitle: Text('Items: ${sale.itemsSummary}\nMobile: ${sale.customerMobile ?? "N/A"}'),
+                              trailing: Row(
+                                mainAxisSize: MainAxisSize.min,
+                                children: [
+                                  Text(
+                                    'Rs. ${sale.totalAmount.toStringAsFixed(0)}',
+                                    style: TextStyle(fontWeight: FontWeight.bold, color: sale.isPaid ? Colors.green : Colors.red),
+                                  ),
+                                  const SizedBox(width: 4),
+                                  ElevatedButton(
+                                    style: ElevatedButton.styleFrom(
+                                      backgroundColor: sale.isPaid ? Colors.grey : Colors.green,
+                                      padding: const EdgeInsets.symmetric(horizontal: 6),
+                                    ),
+                                    onPressed: () async {
+                                      await DatabaseHelper.instance.updatePaymentStatus(sale.id!, !sale.isPaid);
+                                      _refreshSales();
+                                    },
+                                    child: Text(
+                                      sale.isPaid ? 'Unpaid' : 'Paid',
+                                      style: const TextStyle(color: Colors.white, fontSize: 11),
+                                    ),
+                                  ),
+                                  IconButton(
+                                    icon: const Icon(Icons.delete, color: Colors.red, size: 20),
+                                    onPressed: () async {
+                                      await DatabaseHelper.instance.deleteSale(sale.id!);
+                                      _refreshSales();
+                                    },
+                                  ),
+                                ],
                               ),
                             ),
-                            const SizedBox(width: 8),
-                            ElevatedButton(
-                              style: ElevatedButton.styleFrom(
-                                backgroundColor: sale.isPaid ? Colors.grey : Colors.green,
-                              ),
-                              onPressed: () async {
-                                await DatabaseHelper.instance.updatePaymentStatus(sale.id!, !sale.isPaid);
-                                _refreshSales();
-                              },
-                              child: Text(
-                                sale.isPaid ? 'Mark Unpaid' : 'Mark Paid',
-                                style: const TextStyle(color: Colors.white),
-                              ),
-                            ),
-                          ],
-                        ),
+                          );
+                        },
                       ),
-                    );
-                  },
-                ),
               ),
             ],
           );
@@ -1410,12 +1525,14 @@ class _ReportsAndSalesHistoryViewState extends State<ReportsAndSalesHistoryView>
       child: Card(
         color: color.withOpacity(0.1),
         child: Padding(
-          padding: const EdgeInsets.all(12.0),
+          padding: const EdgeInsets.all(8.0),
           child: Column(
             children: [
-              Text(title, style: const TextStyle(fontSize: 16)),
-              const SizedBox(height: 4),
-              Text(value, style: TextStyle(fontSize: 22, fontWeight: FontWeight.bold, color: color)),
+              Text(title, style: const TextStyle(fontSize: 12)),
+              const SizedBox(height: 2),
+              FittedBox(
+                child: Text(value, style: TextStyle(fontSize: 18, fontWeight: FontWeight.bold, color: color)),
+              ),
             ],
           ),
         ),
@@ -1425,7 +1542,7 @@ class _ReportsAndSalesHistoryViewState extends State<ReportsAndSalesHistoryView>
 }
 
 /* ============================================================================
- * VIEW 6: SETTINGS VIEW (TOGGLES & EASYPAISA/JAZZCASH/BANK QR)
+ * VIEW 6: SETTINGS VIEW
  * ========================================================================= */
 class SettingsView extends StatefulWidget {
   final bool isUrdu;
@@ -1475,46 +1592,51 @@ class _SettingsViewState extends State<SettingsView> {
     return ListView(
       padding: const EdgeInsets.all(16),
       children: [
-        const Text('Shop Profile & Settings', style: TextStyle(fontSize: 22, fontWeight: FontWeight.bold)),
-        const SizedBox(height: 16),
+        const Text('Shop Profile & Settings', style: TextStyle(fontSize: 20, fontWeight: FontWeight.bold)),
+        const SizedBox(height: 12),
         TextField(controller: nameCtrl, decoration: const InputDecoration(labelText: 'Shop Name', border: OutlineInputBorder())),
-        const SizedBox(height: 12),
+        const SizedBox(height: 10),
         TextField(controller: addressCtrl, decoration: const InputDecoration(labelText: 'Address', border: OutlineInputBorder())),
-        const SizedBox(height: 12),
+        const SizedBox(height: 10),
         TextField(controller: phoneCtrl, decoration: const InputDecoration(labelText: 'Phone Number', border: OutlineInputBorder())),
-        const SizedBox(height: 12),
+        const SizedBox(height: 10),
         TextField(
           controller: accountInfoCtrl,
-          decoration: const InputDecoration(
-            labelText: 'EasyPaisa / JazzCash / Bank Account Info (For QR Code)',
-            border: OutlineInputBorder(),
-          ),
+          decoration: const InputDecoration(labelText: 'EasyPaisa / JazzCash Account Info', border: OutlineInputBorder()),
         ),
-        const SizedBox(height: 16),
+        const SizedBox(height: 14),
 
-        const Text('Order Types Enable / Disable', style: TextStyle(fontSize: 18, fontWeight: FontWeight.bold)),
+        const Text('Order Types', style: TextStyle(fontSize: 16, fontWeight: FontWeight.bold)),
         SwitchListTile(
-          title: const Text('Enable Dine-In Options'),
+          title: const Text('Dine-In Options'),
           value: enableDineIn,
           onChanged: (v) => setState(() => enableDineIn = v),
         ),
         SwitchListTile(
-          title: const Text('Enable Takeaway Options'),
+          title: const Text('Takeaway Options'),
           value: enableTakeaway,
           onChanged: (v) => setState(() => enableTakeaway = v),
         ),
         SwitchListTile(
-          title: const Text('Enable Delivery Options'),
+          title: const Text('Delivery Options'),
           value: enableDelivery,
           onChanged: (v) => setState(() => enableDelivery = v),
         ),
+        const SizedBox(height: 16),
 
-        const SizedBox(height: 20),
         ElevatedButton.icon(
-          style: ElevatedButton.styleFrom(
-            backgroundColor: Colors.green,
-            padding: const EdgeInsets.symmetric(vertical: 16),
-          ),
+          style: ElevatedButton.styleFrom(backgroundColor: Colors.blue, padding: const EdgeInsets.symmetric(vertical: 14)),
+          onPressed: () async {
+            String dbPath = await DatabaseHelper.instance.getDatabasePath();
+            await Share.shareXFiles([XFile(dbPath)], text: 'Bismillah Samosa POS Database Backup');
+          },
+          icon: const Icon(Icons.backup, color: Colors.white),
+          label: const Text('Backup Database File', style: TextStyle(color: Colors.white, fontSize: 16)),
+        ),
+        const SizedBox(height: 10),
+
+        ElevatedButton.icon(
+          style: ElevatedButton.styleFrom(backgroundColor: Colors.green, padding: const EdgeInsets.symmetric(vertical: 14)),
           onPressed: () async {
             await DatabaseHelper.instance.setSetting('shop_name', nameCtrl.text);
             await DatabaseHelper.instance.setSetting('shop_address', addressCtrl.text);
@@ -1530,7 +1652,7 @@ class _SettingsViewState extends State<SettingsView> {
             ScaffoldMessenger.of(context).showSnackBar(const SnackBar(content: Text('Settings Saved Successfully!')));
           },
           icon: const Icon(Icons.save, color: Colors.white),
-          label: const Text('Save Settings', style: TextStyle(color: Colors.white, fontSize: 18)),
+          label: const Text('Save Settings', style: TextStyle(color: Colors.white, fontSize: 16)),
         ),
       ],
     );
@@ -1538,7 +1660,7 @@ class _SettingsViewState extends State<SettingsView> {
 }
 
 /* ============================================================================
- * THERMAL RECEIPT MODAL (WHATSAPP SHARE ADDED)
+ * THERMAL RECEIPT MODAL
  * ========================================================================= */
 class ReceiptPreviewModal extends StatefulWidget {
   final List<CartItem> cartItems;
@@ -1591,42 +1713,42 @@ class _ReceiptPreviewModalState extends State<ReceiptPreviewModal> {
     String billNo = 'INV-${DateTime.now().millisecondsSinceEpoch.toString().substring(7)}';
 
     return Container(
-      padding: const EdgeInsets.all(24),
+      padding: const EdgeInsets.all(16),
       height: MediaQuery.of(context).size.height * 0.85,
       child: Column(
         children: [
-          const Text('Thermal Receipt Preview (58mm/80mm)', style: TextStyle(fontSize: 18, fontWeight: FontWeight.bold)),
+          const Text('Thermal Receipt Preview (58mm/80mm)', style: TextStyle(fontSize: 16, fontWeight: FontWeight.bold)),
           const Divider(),
           Expanded(
             child: SingleChildScrollView(
               child: Container(
-                width: 320,
-                padding: const EdgeInsets.all(16),
+                width: 280,
+                padding: const EdgeInsets.all(12),
                 color: Colors.white,
                 child: Column(
                   children: [
-                    Text(shopName, style: const TextStyle(fontSize: 18, fontWeight: FontWeight.bold), textAlign: TextAlign.center),
-                    Text(shopAddress),
-                    Text('Ph: $shopPhone'),
+                    Text(shopName, style: const TextStyle(fontSize: 16, fontWeight: FontWeight.bold), textAlign: TextAlign.center),
+                    Text(shopAddress, style: const TextStyle(fontSize: 12)),
+                    Text('Ph: $shopPhone', style: const TextStyle(fontSize: 12)),
                     const Divider(thickness: 2),
 
                     Row(
                       mainAxisAlignment: MainAxisAlignment.spaceBetween,
                       children: [
-                        Text('Token: ${widget.tokenNo}', style: const TextStyle(fontWeight: FontWeight.bold, fontSize: 16)),
-                        Text('Type: ${widget.orderType}'),
+                        Text('Token: ${widget.tokenNo}', style: const TextStyle(fontWeight: FontWeight.bold, fontSize: 14)),
+                        Text('Type: ${widget.orderType}', style: const TextStyle(fontSize: 12)),
                       ],
                     ),
-                    if (widget.mobile.isNotEmpty) Text('Customer: ${widget.mobile}'),
+                    if (widget.mobile.isNotEmpty) Text('Customer: ${widget.mobile}', style: const TextStyle(fontSize: 12)),
                     const Divider(),
 
                     ...widget.cartItems.map((c) => Padding(
-                          padding: const EdgeInsets.symmetric(vertical: 4.0),
+                          padding: const EdgeInsets.symmetric(vertical: 2.0),
                           child: Row(
                             mainAxisAlignment: MainAxisAlignment.spaceBetween,
                             children: [
-                              Text('${c.item.nameEn} x${c.quantity}'),
-                              Text('Rs. ${c.total.toStringAsFixed(0)}'),
+                              Text('${c.item.nameEn} x${c.quantity}', style: const TextStyle(fontSize: 12)),
+                              Text('Rs. ${c.total.toStringAsFixed(0)}', style: const TextStyle(fontSize: 12)),
                             ],
                           ),
                         )),
@@ -1635,69 +1757,63 @@ class _ReceiptPreviewModalState extends State<ReceiptPreviewModal> {
                     Row(
                       mainAxisAlignment: MainAxisAlignment.spaceBetween,
                       children: [
-                        const Text('GRAND TOTAL:', style: TextStyle(fontWeight: FontWeight.bold, fontSize: 18)),
-                        Text('Rs. ${widget.total.toStringAsFixed(0)}', style: const TextStyle(fontWeight: FontWeight.bold, fontSize: 18)),
+                        const Text('GRAND TOTAL:', style: TextStyle(fontWeight: FontWeight.bold, fontSize: 16)),
+                        Text('Rs. ${widget.total.toStringAsFixed(0)}', style: const TextStyle(fontWeight: FontWeight.bold, fontSize: 16)),
                       ],
                     ),
 
                     Container(
                       margin: const EdgeInsets.symmetric(vertical: 6),
-                      padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 4),
+                      padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 2),
                       color: widget.isPaid ? Colors.green : Colors.red,
                       child: Text(
                         widget.isPaid ? 'PAID' : 'UNPAID / UDHAR',
-                        style: const TextStyle(color: Colors.white, fontWeight: FontWeight.bold),
+                        style: const TextStyle(color: Colors.white, fontWeight: FontWeight.bold, fontSize: 12),
                       ),
                     ),
 
-                    const SizedBox(height: 12),
+                    const SizedBox(height: 8),
                     QrImageView(
                       data: accountInfo,
                       version: QrVersions.auto,
-                      size: 110.0,
+                      size: 100.0,
                     ),
                     Text(accountInfo, style: const TextStyle(fontSize: 10), textAlign: TextAlign.center),
-                    const SizedBox(height: 12),
+                    const SizedBox(height: 8),
                     BarcodeWidget(
                       barcode: Barcode.code128(),
                       data: billNo,
-                      height: 35,
-                      width: 170,
+                      height: 30,
+                      width: 150,
                     ),
-                    const SizedBox(height: 8),
-                    const Text('Thank you! Visit again.', style: TextStyle(fontWeight: FontWeight.bold)),
+                    const SizedBox(height: 6),
+                    const Text('Thank you! Visit again.', style: TextStyle(fontWeight: FontWeight.bold, fontSize: 12)),
                   ],
                 ),
               ),
             ),
           ),
-          const SizedBox(height: 12),
+          const SizedBox(height: 8),
           Row(
             children: [
               Expanded(
                 child: ElevatedButton.icon(
-                  style: ElevatedButton.styleFrom(
-                    backgroundColor: Colors.teal,
-                    minimumSize: const Size(0, 50),
-                  ),
+                  style: ElevatedButton.styleFrom(backgroundColor: Colors.teal, minimumSize: const Size(0, 44)),
                   onPressed: () {
                     String receiptText = '*$shopName*\nBill: $billNo\nToken: ${widget.tokenNo}\nTotal: Rs. ${widget.total}\nStatus: ${widget.isPaid ? "PAID" : "UNPAID"}\nThank you!';
                     Share.share(receiptText);
                   },
-                  icon: const Icon(Icons.share, color: Colors.white),
-                  label: const Text('Share on WhatsApp', style: TextStyle(color: Colors.white)),
+                  icon: const Icon(Icons.share, color: Colors.white, size: 18),
+                  label: const Text('Share', style: TextStyle(color: Colors.white)),
                 ),
               ),
               const SizedBox(width: 8),
               Expanded(
                 child: ElevatedButton.icon(
-                  style: ElevatedButton.styleFrom(
-                    backgroundColor: Colors.green,
-                    minimumSize: const Size(0, 50),
-                  ),
+                  style: ElevatedButton.styleFrom(backgroundColor: Colors.green, minimumSize: const Size(0, 44)),
                   onPressed: () => Navigator.pop(context),
-                  icon: const Icon(Icons.print, color: Colors.white),
-                  label: const Text('Print Receipt', style: TextStyle(color: Colors.white)),
+                  icon: const Icon(Icons.print, color: Colors.white, size: 18),
+                  label: const Text('Print', style: TextStyle(color: Colors.white)),
                 ),
               ),
             ],
