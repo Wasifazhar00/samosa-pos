@@ -173,7 +173,6 @@ class DatabaseHelper {
   }
 
   Future<void> _seedDefaults(Database db) async {
-    // 1. Inventory Items
     int patiId = await db.insert('inventory', {'name': 'Samosa Pati', 'stock_qty': 500, 'unit': 'pcs'});
     int chanaId = await db.insert('inventory', {'name': 'Chana', 'stock_qty': 100, 'unit': 'servings'});
     int chatniId = await db.insert('inventory', {'name': 'Chatni', 'stock_qty': 100, 'unit': 'servings'});
@@ -181,32 +180,26 @@ class DatabaseHelper {
     int alooId = await db.insert('inventory', {'name': 'Aloo Filling', 'stock_qty': 50, 'unit': 'kg'});
     int cokeId = await db.insert('inventory', {'name': 'Cold Drink (Coke)', 'stock_qty': 40, 'unit': 'bottles'});
 
-    // 2. Menu Items
     int m1 = await db.insert('menu', {'name_en': 'Chicken Samosa', 'name_ur': 'چکن سموسہ', 'price': 50, 'icon': '🍗', 'in_stock': 1});
     int m2 = await db.insert('menu', {'name_en': 'Aloo Samosa', 'name_ur': 'آلو سموسہ', 'price': 30, 'icon': '🥔', 'in_stock': 1});
     int m3 = await db.insert('menu', {'name_en': 'Single Plate', 'name_ur': 'سنگل پلیٹ', 'price': 80, 'icon': '🍽️', 'in_stock': 1});
     int m4 = await db.insert('menu', {'name_en': 'Double Plate', 'name_ur': 'ڈبل پلیٹ', 'price': 140, 'icon': '🍱', 'in_stock': 1});
     int m5 = await db.insert('menu', {'name_en': 'Cold Drink', 'name_ur': 'کولڈ ڈرنک', 'price': 70, 'icon': '🥤', 'in_stock': 1});
 
-    // 3. Recipes (Bill of Materials)
-    // Single Samosas
     await db.insert('recipes', {'menu_id': m1, 'inventory_id': patiId, 'required_qty': 1});
     await db.insert('recipes', {'menu_id': m1, 'inventory_id': chickenId, 'required_qty': 0.05});
 
     await db.insert('recipes', {'menu_id': m2, 'inventory_id': patiId, 'required_qty': 1});
     await db.insert('recipes', {'menu_id': m2, 'inventory_id': alooId, 'required_qty': 0.05});
 
-    // Single Plate = 1 Samosa Pati + Chana + Chatni
     await db.insert('recipes', {'menu_id': m3, 'inventory_id': patiId, 'required_qty': 1});
     await db.insert('recipes', {'menu_id': m3, 'inventory_id': chanaId, 'required_qty': 1});
     await db.insert('recipes', {'menu_id': m3, 'inventory_id': chatniId, 'required_qty': 1});
 
-    // Double Plate = 2 Samosa Patis + Chana + Chatni
     await db.insert('recipes', {'menu_id': m4, 'inventory_id': patiId, 'required_qty': 2});
     await db.insert('recipes', {'menu_id': m4, 'inventory_id': chanaId, 'required_qty': 1});
     await db.insert('recipes', {'menu_id': m4, 'inventory_id': chatniId, 'required_qty': 1});
 
-    // Cold Drink = 1 Bottle
     await db.insert('recipes', {'menu_id': m5, 'inventory_id': cokeId, 'required_qty': 1});
   }
 
@@ -222,7 +215,6 @@ class DatabaseHelper {
     return result.map((json) => InventoryItem.fromMap(json)).toList();
   }
 
-  // Deduct Inventory automatically using BOM logic
   Future<void> processSale(List<CartItem> cartItems, String paymentMethod, String tokenNo) async {
     final db = await instance.database;
 
@@ -232,7 +224,6 @@ class DatabaseHelper {
       for (var cart in cartItems) {
         grandTotal += cart.total;
 
-        // Query recipe rules for this item
         final recipes = await txn.query(
           'recipes',
           where: 'menu_id = ?',
@@ -244,7 +235,6 @@ class DatabaseHelper {
           double reqQty = (rule['required_qty'] as num).toDouble();
           double totalDeduction = reqQty * cart.quantity;
 
-          // Deduct from Stock
           await txn.rawUpdate(
             'UPDATE inventory SET stock_qty = stock_qty - ? WHERE id = ?',
             [totalDeduction, invId],
@@ -252,7 +242,6 @@ class DatabaseHelper {
         }
       }
 
-      // Record Sales Transaction
       await txn.insert('sales', {
         'bill_no': 'INV-${DateTime.now().millisecondsSinceEpoch.toString().substring(7)}',
         'token_no': tokenNo,
@@ -285,7 +274,7 @@ class _SamosaPosAppState extends State<SamosaPosApp> {
       theme: ThemeData(
         useMaterial3: true,
         colorScheme: ColorScheme.fromSeed(
-          seedColor: const Color(0xFFD84315), // Warm Samosa Orange/Brown
+          seedColor: const Color(0xFFD84315),
           primary: const Color(0xFFD84315),
           secondary: const Color(0xFF2E7D32),
         ),
@@ -329,7 +318,6 @@ class _MainPosScreenState extends State<MainPosScreen> {
           style: const TextStyle(fontWeight: FontWeight.bold, color: Colors.white, fontSize: 22),
         ),
         actions: [
-          // Language Switcher
           Padding(
             padding: const EdgeInsets.symmetric(horizontal: 8.0),
             child: ElevatedButton.icon(
@@ -347,7 +335,6 @@ class _MainPosScreenState extends State<MainPosScreen> {
       body: IndexedStack(
         index: _selectedIndex,
         children: [
-          // 1. POS Terminal
           PosTerminalView(
             isUrdu: widget.isUrdu,
             cart: cart,
@@ -364,8 +351,6 @@ class _MainPosScreenState extends State<MainPosScreen> {
             onClearCart: () => setState(() => cart.clear()),
             onCheckoutSuccess: () => setState(() => cart.clear()),
           ),
-
-          // 2. Table & Tokens Manager
           TablesView(
             isUrdu: widget.isUrdu,
             tokens: activeTokens,
@@ -374,15 +359,11 @@ class _MainPosScreenState extends State<MainPosScreen> {
                 cart = List.from(token.items);
                 activeTable = token.tableName;
                 currentTokenNo = token.tokenNo;
-                _selectedIndex = 0; // Switch to POS terminal
+                _selectedIndex = 0;
               });
             },
           ),
-
-          // 3. Inventory & Recipes
           InventoryView(isUrdu: widget.isUrdu),
-
-          // 4. Reports
           ReportsView(isUrdu: widget.isUrdu),
         ],
       ),
@@ -454,7 +435,6 @@ class _PosTerminalViewState extends State<PosTerminalView> {
   Widget build(BuildContext context) {
     return Row(
       children: [
-        // LEFT: Menu Grid (2/3 Width)
         Expanded(
           flex: 3,
           child: FutureBuilder<List<MenuItem>>(
@@ -506,8 +486,6 @@ class _PosTerminalViewState extends State<PosTerminalView> {
             },
           ),
         ),
-
-        // RIGHT: Cart & Billing (1/3 Width)
         Expanded(
           flex: 2,
           child: Card(
@@ -517,7 +495,6 @@ class _PosTerminalViewState extends State<PosTerminalView> {
               padding: const EdgeInsets.all(12.0),
               child: Column(
                 children: [
-                  // Header Banner
                   Container(
                     width: double.infinity,
                     padding: const EdgeInsets.all(8),
@@ -530,8 +507,6 @@ class _PosTerminalViewState extends State<PosTerminalView> {
                       ],
                     ),
                   ),
-
-                  // Cart Items List
                   Expanded(
                     child: widget.cart.isEmpty
                         ? Center(
@@ -576,8 +551,6 @@ class _PosTerminalViewState extends State<PosTerminalView> {
                             },
                           ),
                   ),
-
-                  // Total & Checkout
                   Container(
                     padding: const EdgeInsets.all(12),
                     decoration: BoxDecoration(
@@ -599,8 +572,6 @@ class _PosTerminalViewState extends State<PosTerminalView> {
                     ),
                   ),
                   const SizedBox(height: 12),
-
-                  // Action Buttons
                   Row(
                     children: [
                       Expanded(
@@ -624,9 +595,7 @@ class _PosTerminalViewState extends State<PosTerminalView> {
                             backgroundColor: Colors.green,
                             padding: const EdgeInsets.symmetric(vertical: 16),
                           ),
-                          onPressed: widget.cart.isEmpty
-                              ? null
-                              : () => _showCheckoutDialog(context),
+                          onPressed: widget.cart.isEmpty ? null : () => _showCheckoutDialog(context),
                           child: Text(
                             widget.isUrdu ? 'بل ادا کریں (Pay)' : 'Pay & Print',
                             style: const TextStyle(color: Colors.white, fontSize: 18, fontWeight: FontWeight.bold),
@@ -679,7 +648,6 @@ class _PosTerminalViewState extends State<PosTerminalView> {
 
     if (!mounted) return;
 
-    // Show Receipt Modal
     showModalBottomSheet(
       context: context,
       isScrollControlled: true,
@@ -747,7 +715,6 @@ class TablesView extends StatelessWidget {
                 ),
                 ElevatedButton(
                   onPressed: () {
-                    // Create new customer token under this table
                     final newToken = OrderToken(
                       id: DateTime.now().toString(),
                       tokenNo: '${index + 1}-${String.fromCharCode(65 + openCount)}',
@@ -769,7 +736,7 @@ class TablesView extends StatelessWidget {
 }
 
 /* ============================================================================
- * VIEW 3: INVENTORY & BOM CONSUMPTION VIEW
+ * VIEW 3: INVENTORY VIEW
  * ========================================================================= */
 class InventoryView extends StatelessWidget {
   final bool isUrdu;
@@ -869,7 +836,7 @@ class ReportsView extends StatelessWidget {
 }
 
 /* ============================================================================
- * THERMAL RECEIPT MODAL WITH UPI QR CODE & BARCODE
+ * THERMAL RECEIPT MODAL
  * ========================================================================= */
 class ReceiptPreviewModal extends StatelessWidget {
   final List<CartItem> cartItems;
@@ -898,12 +865,10 @@ class ReceiptPreviewModal extends StatelessWidget {
         children: [
           const Text('Thermal Receipt Preview (58mm/80mm)', style: TextStyle(fontSize: 18, fontWeight: FontWeight.bold)),
           const Divider(),
-
-          // Receipt Simulation Container
           Expanded(
             child: SingleChildScrollView(
               child: Container(
-                width: 320, // 80mm thermal printer style width
+                width: 320,
                 padding: const EdgeInsets.all(16),
                 color: Colors.white,
                 child: Column(
@@ -912,7 +877,6 @@ class ReceiptPreviewModal extends StatelessWidget {
                     const Text('Main Bazaar Layyah'),
                     const Text('Ph: +92 300 1234567'),
                     const Divider(thickness: 2),
-
                     Row(
                       mainAxisAlignment: MainAxisAlignment.spaceBetween,
                       children: [
@@ -921,10 +885,8 @@ class ReceiptPreviewModal extends StatelessWidget {
                       ],
                     ),
                     const Divider(),
-
-                    // Items List
                     ...cartItems.map((c) => Padding(
-                          padding: const EdgeInsets.vertical: 4.0,
+                          padding: const EdgeInsets.symmetric(vertical: 4.0),
                           child: Row(
                             mainAxisAlignment: MainAxisAlignment.spaceBetween,
                             children: [
@@ -933,7 +895,6 @@ class ReceiptPreviewModal extends StatelessWidget {
                             ],
                           ),
                         )),
-
                     const Divider(thickness: 2),
                     Row(
                       mainAxisAlignment: MainAxisAlignment.spaceBetween,
@@ -944,8 +905,6 @@ class ReceiptPreviewModal extends StatelessWidget {
                     ),
                     Text('Payment: $paymentMethod', style: const TextStyle(fontStyle: FontStyle.italic)),
                     const SizedBox(height: 12),
-
-                    // UPI QR Code Generator
                     QrImageView(
                       data: 'upi://pay?pa=zamzamsamosa@upi&pn=ZamZamSamosa&am=$total',
                       version: QrVersions.auto,
@@ -953,8 +912,6 @@ class ReceiptPreviewModal extends StatelessWidget {
                     ),
                     const Text('Scan to Pay via UPI', style: TextStyle(fontSize: 12)),
                     const SizedBox(height: 12),
-
-                    // Barcode Generator
                     BarcodeWidget(
                       barcode: Barcode.code128(),
                       data: billNo,
@@ -968,7 +925,6 @@ class ReceiptPreviewModal extends StatelessWidget {
               ),
             ),
           ),
-
           const SizedBox(height: 12),
           ElevatedButton.icon(
             style: ElevatedButton.styleFrom(
