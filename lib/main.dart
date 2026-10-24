@@ -66,6 +66,13 @@ class InventoryItem {
 
   InventoryItem({this.id, required this.name, required this.stockQty, required this.unit});
 
+  Map<String, dynamic> toMap() => {
+        'id': id,
+        'name': name,
+        'stock_qty': stockQty,
+        'unit': unit,
+      };
+
   factory InventoryItem.fromMap(Map<String, dynamic> map) => InventoryItem(
         id: map['id'],
         name: map['name'],
@@ -77,10 +84,12 @@ class InventoryItem {
 class CartItem {
   final MenuItem item;
   int quantity;
+  double customPrice;
 
-  CartItem({required this.item, this.quantity = 1});
+  CartItem({required this.item, this.quantity = 1, double? customPrice})
+      : customPrice = customPrice ?? item.price;
 
-  double get total => item.price * quantity;
+  double get total => customPrice * quantity;
 }
 
 class OrderToken {
@@ -102,7 +111,7 @@ class OrderToken {
 }
 
 /* ============================================================================
- * DATABASE & BOM SERVICE
+ * DATABASE & SETTINGS HELPER
  * ========================================================================= */
 class DatabaseHelper {
   static final DatabaseHelper instance = DatabaseHelper._init();
@@ -112,7 +121,7 @@ class DatabaseHelper {
 
   Future<Database> get database async {
     if (_database != null) return _database!;
-    _database = await _initDB('samosa_pos.db');
+    _database = await _initDB('bismillah_samosa_pos.db');
     return _database!;
   }
 
@@ -122,7 +131,7 @@ class DatabaseHelper {
 
     return await openDatabase(
       path,
-      version: 1,
+      version: 2,
       onCreate: _createDB,
     );
   }
@@ -168,11 +177,26 @@ class DatabaseHelper {
       )
     ''');
 
-    // Seed Defaults
+    await db.execute('''
+      CREATE TABLE settings (
+        key TEXT PRIMARY KEY,
+        value TEXT
+      )
+    ''');
+
     await _seedDefaults(db);
   }
 
   Future<void> _seedDefaults(Database db) async {
+    // Default Settings
+    await db.insert('settings', {'key': 'shop_name', 'value': 'Bismillah Shereen Mehal Samosa POS'});
+    await db.insert('settings', {'key': 'shop_address', 'value': 'Main Chowk, Layyah'});
+    await db.insert('settings', {'key': 'shop_phone', 'value': '+92 300 1234567'});
+    await db.insert('settings', {'key': 'upi_id', 'value': 'bismillahsamosa@easypaisa'});
+    await db.insert('settings', {'key': 'admin_pin', 'value': '1234'});
+    await db.insert('settings', {'key': 'receipt_footer', 'value': 'Thank you! Visit Bismillah Shereen Mehal again.'});
+
+    // Seed Inventory
     int patiId = await db.insert('inventory', {'name': 'Samosa Pati', 'stock_qty': 500, 'unit': 'pcs'});
     int chanaId = await db.insert('inventory', {'name': 'Chana', 'stock_qty': 100, 'unit': 'servings'});
     int chatniId = await db.insert('inventory', {'name': 'Chatni', 'stock_qty': 100, 'unit': 'servings'});
@@ -180,12 +204,14 @@ class DatabaseHelper {
     int alooId = await db.insert('inventory', {'name': 'Aloo Filling', 'stock_qty': 50, 'unit': 'kg'});
     int cokeId = await db.insert('inventory', {'name': 'Cold Drink (Coke)', 'stock_qty': 40, 'unit': 'bottles'});
 
+    // Seed Menu
     int m1 = await db.insert('menu', {'name_en': 'Chicken Samosa', 'name_ur': 'چکن سموسہ', 'price': 50, 'icon': '🍗', 'in_stock': 1});
     int m2 = await db.insert('menu', {'name_en': 'Aloo Samosa', 'name_ur': 'آلو سموسہ', 'price': 30, 'icon': '🥔', 'in_stock': 1});
     int m3 = await db.insert('menu', {'name_en': 'Single Plate', 'name_ur': 'سنگل پلیٹ', 'price': 80, 'icon': '🍽️', 'in_stock': 1});
     int m4 = await db.insert('menu', {'name_en': 'Double Plate', 'name_ur': 'ڈبل پلیٹ', 'price': 140, 'icon': '🍱', 'in_stock': 1});
     int m5 = await db.insert('menu', {'name_en': 'Cold Drink', 'name_ur': 'کولڈ ڈرنک', 'price': 70, 'icon': '🥤', 'in_stock': 1});
 
+    // Seed Recipes (BOM)
     await db.insert('recipes', {'menu_id': m1, 'inventory_id': patiId, 'required_qty': 1});
     await db.insert('recipes', {'menu_id': m1, 'inventory_id': chickenId, 'required_qty': 0.05});
 
@@ -203,18 +229,65 @@ class DatabaseHelper {
     await db.insert('recipes', {'menu_id': m5, 'inventory_id': cokeId, 'required_qty': 1});
   }
 
+  // --- MENU MANAGEMENT CRUD ---
   Future<List<MenuItem>> getMenuItems() async {
     final db = await instance.database;
     final result = await db.query('menu');
     return result.map((json) => MenuItem.fromMap(json)).toList();
   }
 
+  Future<int> addMenuItem(MenuItem item) async {
+    final db = await instance.database;
+    return await db.insert('menu', item.toMap());
+  }
+
+  Future<int> updateMenuItem(MenuItem item) async {
+    final db = await instance.database;
+    return await db.update('menu', item.toMap(), where: 'id = ?', whereArgs: [item.id]);
+  }
+
+  Future<int> deleteMenuItem(int id) async {
+    final db = await instance.database;
+    return await db.delete('menu', where: 'id = ?', whereArgs: [id]);
+  }
+
+  // --- INVENTORY MANAGEMENT CRUD ---
   Future<List<InventoryItem>> getInventory() async {
     final db = await instance.database;
     final result = await db.query('inventory');
     return result.map((json) => InventoryItem.fromMap(json)).toList();
   }
 
+  Future<int> addInventoryItem(InventoryItem item) async {
+    final db = await instance.database;
+    return await db.insert('inventory', item.toMap());
+  }
+
+  Future<int> updateStockQty(int id, double newQty) async {
+    final db = await instance.database;
+    return await db.rawUpdate('UPDATE inventory SET stock_qty = ? WHERE id = ?', [newQty, id]);
+  }
+
+  // --- SETTINGS CRUD ---
+  Future<String> getSetting(String key, {String defaultValue = ''}) async {
+    final db = await instance.database;
+    final result = await db.query('settings', where: 'key = ?', whereArgs: [key]);
+    if (result.isNotEmpty) {
+      return result.first['value'] as String;
+    }
+    return defaultValue;
+  }
+
+  Future<void> setSetting(String key, String value) async {
+    final db = await instance.database;
+    await db.insert(
+      'settings',
+      {'key': key, 'value': value},
+      conflictAlgorithm: ConflictAlgorithm.replace,
+    );
+  }
+
+  // Process Sales & Deduct Stock
   Future<void> processSale(List<CartItem> cartItems, String paymentMethod, String tokenNo) async {
     final db = await instance.database;
 
@@ -269,7 +342,7 @@ class _SamosaPosAppState extends State<SamosaPosApp> {
   @override
   Widget build(BuildContext context) {
     return MaterialApp(
-      title: 'Samosa Shop POS',
+      title: 'Bismillah Shereen Mehal Samosa POS',
       debugShowCheckedModeBanner: false,
       theme: ThemeData(
         useMaterial3: true,
@@ -307,6 +380,20 @@ class _MainPosScreenState extends State<MainPosScreen> {
   List<OrderToken> activeTokens = [];
   String activeTable = 'Table 1';
   String currentTokenNo = '1-A';
+  String shopName = 'Bismillah Shereen Mehal Samosa POS';
+
+  @override
+  void initState() {
+    super.initState();
+    _loadSettings();
+  }
+
+  void _loadSettings() async {
+    String name = await DatabaseHelper.instance.getSetting('shop_name', defaultValue: 'Bismillah Shereen Mehal Samosa POS');
+    setState(() {
+      shopName = name;
+    });
+  }
 
   @override
   Widget build(BuildContext context) {
@@ -314,8 +401,8 @@ class _MainPosScreenState extends State<MainPosScreen> {
       appBar: AppBar(
         backgroundColor: Theme.of(context).colorScheme.primary,
         title: Text(
-          widget.isUrdu ? 'زم زم سموسہ پوائنٹ POS' : 'Zam Zam Samosa Point POS',
-          style: const TextStyle(fontWeight: FontWeight.bold, color: Colors.white, fontSize: 22),
+          widget.isUrdu ? 'بسم اللہ شیریں محل سموسہ POS' : shopName,
+          style: const TextStyle(fontWeight: FontWeight.bold, color: Colors.white, fontSize: 20),
         ),
         actions: [
           Padding(
@@ -363,8 +450,13 @@ class _MainPosScreenState extends State<MainPosScreen> {
               });
             },
           ),
+          MenuManagementView(isUrdu: widget.isUrdu),
           InventoryView(isUrdu: widget.isUrdu),
           ReportsView(isUrdu: widget.isUrdu),
+          SettingsView(
+            isUrdu: widget.isUrdu,
+            onSettingsSaved: _loadSettings,
+          ),
         ],
       ),
       bottomNavigationBar: NavigationBar(
@@ -377,7 +469,11 @@ class _MainPosScreenState extends State<MainPosScreen> {
           ),
           NavigationDestination(
             icon: const Icon(Icons.table_restaurant, size: 28),
-            label: widget.isUrdu ? 'ٹیبلز (Tables)' : 'Tables & Tokens',
+            label: widget.isUrdu ? 'ٹیبلز' : 'Tables',
+          ),
+          NavigationDestination(
+            icon: const Icon(Icons.restaurant_menu, size: 28),
+            label: widget.isUrdu ? 'مینو (Menu)' : 'Menu Edit',
           ),
           NavigationDestination(
             icon: const Icon(Icons.inventory, size: 28),
@@ -385,7 +481,11 @@ class _MainPosScreenState extends State<MainPosScreen> {
           ),
           NavigationDestination(
             icon: const Icon(Icons.bar_chart, size: 28),
-            label: widget.isUrdu ? 'رپورٹس (Reports)' : 'Reports',
+            label: widget.isUrdu ? 'رپورٹس' : 'Reports',
+          ),
+          NavigationDestination(
+            icon: const Icon(Icons.settings, size: 28),
+            label: widget.isUrdu ? 'سیٹنگز' : 'Settings',
           ),
         ],
       ),
@@ -422,27 +522,34 @@ class PosTerminalView extends StatefulWidget {
 
 class _PosTerminalViewState extends State<PosTerminalView> {
   late Future<List<MenuItem>> _menuItemsFuture;
+  double discount = 0;
 
   @override
   void initState() {
     super.initState();
-    _menuItemsFuture = DatabaseHelper.instance.getMenuItems();
+    _refreshMenu();
   }
 
-  double get cartTotal => widget.cart.fold(0, (sum, item) => sum + item.total);
+  void _refreshMenu() {
+    setState(() {
+      _menuItemsFuture = DatabaseHelper.instance.getMenuItems();
+    });
+  }
+
+  double get subTotal => widget.cart.fold(0, (sum, item) => sum + item.total);
+  double get grandTotal => subTotal - discount < 0 ? 0 : subTotal - discount;
 
   @override
   Widget build(BuildContext context) {
     return Row(
       children: [
+        // Left Menu Grid
         Expanded(
           flex: 3,
           child: FutureBuilder<List<MenuItem>>(
             future: _menuItemsFuture,
             builder: (context, snapshot) {
-              if (!snapshot.hasData) {
-                return const Center(child: CircularProgressIndicator());
-              }
+              if (!snapshot.hasData) return const Center(child: CircularProgressIndicator());
 
               final items = snapshot.data!;
               return GridView.builder(
@@ -459,23 +566,27 @@ class _PosTerminalViewState extends State<PosTerminalView> {
                   return Card(
                     elevation: 4,
                     shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(16)),
-                    color: Colors.orange.shade50,
+                    color: item.inStock ? Colors.orange.shade50 : Colors.grey.shade300,
                     child: InkWell(
                       borderRadius: BorderRadius.circular(16),
-                      onTap: () => widget.onAddToCart(item),
+                      onTap: item.inStock ? () => widget.onAddToCart(item) : null,
                       child: Column(
                         mainAxisAlignment: MainAxisAlignment.center,
                         children: [
-                          Text(item.icon, style: const TextStyle(fontSize: 48)),
-                          const SizedBox(height: 8),
+                          Text(item.icon, style: const TextStyle(fontSize: 44)),
+                          const SizedBox(height: 6),
                           Text(
                             widget.isUrdu ? item.nameUr : item.nameEn,
-                            style: const TextStyle(fontSize: 20, fontWeight: FontWeight.bold),
+                            style: const TextStyle(fontSize: 18, fontWeight: FontWeight.bold),
                             textAlign: TextAlign.center,
                           ),
                           Text(
-                            'Rs. ${item.price.toStringAsFixed(0)}',
-                            style: TextStyle(fontSize: 18, color: Theme.of(context).colorScheme.primary, fontWeight: FontWeight.bold),
+                            item.inStock ? 'Rs. ${item.price.toStringAsFixed(0)}' : 'OUT OF STOCK',
+                            style: TextStyle(
+                              fontSize: 16,
+                              color: item.inStock ? Theme.of(context).colorScheme.primary : Colors.red,
+                              fontWeight: FontWeight.bold,
+                            ),
                           ),
                         ],
                       ),
@@ -486,6 +597,8 @@ class _PosTerminalViewState extends State<PosTerminalView> {
             },
           ),
         ),
+
+        // Right Cart View
         Expanded(
           flex: 2,
           child: Card(
@@ -507,6 +620,7 @@ class _PosTerminalViewState extends State<PosTerminalView> {
                       ],
                     ),
                   ),
+
                   Expanded(
                     child: widget.cart.isEmpty
                         ? Center(
@@ -525,7 +639,7 @@ class _PosTerminalViewState extends State<PosTerminalView> {
                                   widget.isUrdu ? cartItem.item.nameUr : cartItem.item.nameEn,
                                   style: const TextStyle(fontSize: 18, fontWeight: FontWeight.bold),
                                 ),
-                                subtitle: Text('Rs. ${cartItem.item.price} x ${cartItem.quantity}'),
+                                subtitle: Text('Rs. ${cartItem.customPrice} x ${cartItem.quantity}'),
                                 trailing: Row(
                                   mainAxisSize: MainAxisSize.min,
                                   children: [
@@ -551,6 +665,24 @@ class _PosTerminalViewState extends State<PosTerminalView> {
                             },
                           ),
                   ),
+
+                  // Discount Field
+                  Row(
+                    mainAxisAlignment: MainAxisAlignment.spaceBetween,
+                    children: [
+                      Text(widget.isUrdu ? 'ڈسکانٹ:' : 'Discount:'),
+                      SizedBox(
+                        width: 100,
+                        child: TextField(
+                          keyboardType: TextInputType.number,
+                          decoration: const InputDecoration(border: OutlineInputBorder(), isDense: true),
+                          onChanged: (v) => setState(() => discount = double.tryParse(v) ?? 0),
+                        ),
+                      ),
+                    ],
+                  ),
+                  const SizedBox(height: 8),
+
                   Container(
                     padding: const EdgeInsets.all(12),
                     decoration: BoxDecoration(
@@ -565,13 +697,14 @@ class _PosTerminalViewState extends State<PosTerminalView> {
                           style: const TextStyle(fontSize: 22, fontWeight: FontWeight.bold),
                         ),
                         Text(
-                          'Rs. ${cartTotal.toStringAsFixed(0)}',
+                          'Rs. ${grandTotal.toStringAsFixed(0)}',
                           style: const TextStyle(fontSize: 28, fontWeight: FontWeight.bold, color: Colors.green),
                         ),
                       ],
                     ),
                   ),
                   const SizedBox(height: 12),
+
                   Row(
                     children: [
                       Expanded(
@@ -631,10 +764,10 @@ class _PosTerminalViewState extends State<PosTerminalView> {
             ),
             ListTile(
               leading: const Icon(Icons.qr_code, size: 36, color: Colors.blue),
-              title: Text(widget.isUrdu ? 'آن لائن / UPI' : 'UPI / Online QR'),
+              title: Text(widget.isUrdu ? 'آن لائن / EasyPaisa / UPI' : 'Online / EasyPaisa / UPI'),
               onTap: () {
                 Navigator.pop(ctx);
-                _completePayment('UPI');
+                _completePayment('Online');
               },
             ),
           ],
@@ -653,7 +786,7 @@ class _PosTerminalViewState extends State<PosTerminalView> {
       isScrollControlled: true,
       builder: (ctx) => ReceiptPreviewModal(
         cartItems: List.from(widget.cart),
-        total: cartTotal,
+        total: grandTotal,
         paymentMethod: method,
         tokenNo: widget.tokenNo,
         isUrdu: widget.isUrdu,
@@ -665,7 +798,7 @@ class _PosTerminalViewState extends State<PosTerminalView> {
 }
 
 /* ============================================================================
- * VIEW 2: TABLES & TOKENS VIEW
+ * VIEW 2: TABLES VIEW
  * ========================================================================= */
 class TablesView extends StatelessWidget {
   final bool isUrdu;
@@ -736,56 +869,293 @@ class TablesView extends StatelessWidget {
 }
 
 /* ============================================================================
- * VIEW 3: INVENTORY VIEW
+ * VIEW 3: MENU MANAGEMENT VIEW (ADD / EDIT / DELETE)
  * ========================================================================= */
-class InventoryView extends StatelessWidget {
+class MenuManagementView extends StatefulWidget {
   final bool isUrdu;
 
-  const InventoryView({super.key, required this.isUrdu});
+  const MenuManagementView({super.key, required this.isUrdu});
+
+  @override
+  State<MenuManagementView> createState() => _MenuManagementViewState();
+}
+
+class _MenuManagementViewState extends State<MenuManagementView> {
+  late Future<List<MenuItem>> _menuFuture;
+
+  @override
+  void initState() {
+    super.initState();
+    _refreshMenu();
+  }
+
+  void _refreshMenu() {
+    setState(() {
+      _menuFuture = DatabaseHelper.instance.getMenuItems();
+    });
+  }
 
   @override
   Widget build(BuildContext context) {
-    return FutureBuilder<List<InventoryItem>>(
-      future: DatabaseHelper.instance.getInventory(),
-      builder: (context, snapshot) {
-        if (!snapshot.hasData) return const Center(child: CircularProgressIndicator());
+    return Scaffold(
+      floatingActionButton: FloatingActionButton.extended(
+        onPressed: () => _showAddEditItemDialog(context),
+        label: Text(widget.isUrdu ? 'نیا آئٹم شامل کریں' : 'Add New Menu Item'),
+        icon: const Icon(Icons.add),
+      ),
+      body: FutureBuilder<List<MenuItem>>(
+        future: _menuFuture,
+        builder: (context, snapshot) {
+          if (!snapshot.hasData) return const Center(child: CircularProgressIndicator());
 
-        final items = snapshot.data!;
-        return ListView.builder(
-          padding: const EdgeInsets.all(16),
-          itemCount: items.length,
-          itemBuilder: (context, index) {
-            final item = items[index];
-            final isLow = item.stockQty < 20;
-
-            return Card(
-              child: ListTile(
-                leading: Icon(
-                  Icons.inventory_2,
-                  color: isLow ? Colors.red : Colors.green,
-                  size: 36,
-                ),
-                title: Text(item.name, style: const TextStyle(fontSize: 20, fontWeight: FontWeight.bold)),
-                subtitle: Text(isLow ? 'Low Stock Warning!' : 'Stock Available'),
-                trailing: Text(
-                  '${item.stockQty.toStringAsFixed(1)} ${item.unit}',
-                  style: TextStyle(
-                    fontSize: 22,
-                    fontWeight: FontWeight.bold,
-                    color: isLow ? Colors.red : Colors.black,
+          final items = snapshot.data!;
+          return ListView.builder(
+            padding: const EdgeInsets.all(16),
+            itemCount: items.length,
+            itemBuilder: (context, index) {
+              final item = items[index];
+              return Card(
+                child: ListTile(
+                  leading: Text(item.icon, style: const TextStyle(fontSize: 32)),
+                  title: Text('${item.nameEn} / ${item.nameUr}', style: const TextStyle(fontSize: 18, fontWeight: FontWeight.bold)),
+                  subtitle: Text('Price: Rs. ${item.price} | Status: ${item.inStock ? "In Stock" : "Out of Stock"}'),
+                  trailing: Row(
+                    mainAxisSize: MainAxisSize.min,
+                    children: [
+                      Switch(
+                        value: item.inStock,
+                        onChanged: (val) async {
+                          await DatabaseHelper.instance.updateMenuItem(MenuItem(
+                            id: item.id,
+                            nameEn: item.nameEn,
+                            nameUr: item.nameUr,
+                            price: item.price,
+                            icon: item.icon,
+                            inStock: val,
+                          ));
+                          _refreshMenu();
+                        },
+                      ),
+                      IconButton(
+                        icon: const Icon(Icons.edit, color: Colors.blue),
+                        onPressed: () => _showAddEditItemDialog(context, item: item),
+                      ),
+                      IconButton(
+                        icon: const Icon(Icons.delete, color: Colors.red),
+                        onPressed: () async {
+                          await DatabaseHelper.instance.deleteMenuItem(item.id!);
+                          _refreshMenu();
+                        },
+                      ),
+                    ],
                   ),
                 ),
-              ),
-            );
-          },
-        );
-      },
+              );
+            },
+          );
+        },
+      ),
+    );
+  }
+
+  void _showAddEditItemDialog(BuildContext context, {MenuItem? item}) {
+    final nameEnCtrl = TextEditingController(text: item?.nameEn ?? '');
+    final nameUrCtrl = TextEditingController(text: item?.nameUr ?? '');
+    final priceCtrl = TextEditingController(text: item != null ? item.price.toString() : '');
+    final iconCtrl = TextEditingController(text: item?.icon ?? '🥙');
+
+    showDialog(
+      context: context,
+      builder: (ctx) => AlertDialog(
+        title: Text(item == null ? 'Add Menu Item' : 'Edit Menu Item'),
+        content: Column(
+          mainAxisSize: MainAxisSize.min,
+          children: [
+            TextField(controller: nameEnCtrl, decoration: const InputDecoration(labelText: 'English Name')),
+            TextField(controller: nameUrCtrl, decoration: const InputDecoration(labelText: 'Urdu Name')),
+            TextField(controller: priceCtrl, keyboardType: TextInputType.number, decoration: const InputDecoration(labelText: 'Price (Rs.)')),
+            TextField(controller: iconCtrl, decoration: const InputDecoration(labelText: 'Emoji Icon')),
+          ],
+        ),
+        actions: [
+          TextButton(onPressed: () => Navigator.pop(ctx), child: const Text('Cancel')),
+          ElevatedButton(
+            onPressed: () async {
+              final newItem = MenuItem(
+                id: item?.id,
+                nameEn: nameEnCtrl.text,
+                nameUr: nameUrCtrl.text,
+                price: double.tryParse(priceCtrl.text) ?? 0,
+                icon: iconCtrl.text,
+                inStock: item?.inStock ?? true,
+              );
+
+              if (item == null) {
+                await DatabaseHelper.instance.addMenuItem(newItem);
+              } else {
+                await DatabaseHelper.instance.updateMenuItem(newItem);
+              }
+
+              if (!mounted) return;
+              Navigator.pop(ctx);
+              _refreshMenu();
+            },
+            child: const Text('Save'),
+          ),
+        ],
+      ),
     );
   }
 }
 
 /* ============================================================================
- * VIEW 4: REPORTS VIEW
+ * VIEW 4: INVENTORY VIEW (STOCK-IN & RAW MATERIALS)
+ * ========================================================================= */
+class InventoryView extends StatefulWidget {
+  final bool isUrdu;
+
+  const InventoryView({super.key, required this.isUrdu});
+
+  @override
+  State<InventoryView> createState() => _InventoryViewState();
+}
+
+class _InventoryViewState extends State<InventoryView> {
+  late Future<List<InventoryItem>> _inventoryFuture;
+
+  @override
+  void initState() {
+    super.initState();
+    _refreshStock();
+  }
+
+  void _refreshStock() {
+    setState(() {
+      _inventoryFuture = DatabaseHelper.instance.getInventory();
+    });
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    return Scaffold(
+      floatingActionButton: FloatingActionButton.extended(
+        onPressed: () => _showAddStockDialog(context),
+        label: Text(widget.isUrdu ? 'نیا سٹاک شامل کریں' : 'Add Raw Material'),
+        icon: const Icon(Icons.add_box),
+      ),
+      body: FutureBuilder<List<InventoryItem>>(
+        future: _inventoryFuture,
+        builder: (context, snapshot) {
+          if (!snapshot.hasData) return const Center(child: CircularProgressIndicator());
+
+          final items = snapshot.data!;
+          return ListView.builder(
+            padding: const EdgeInsets.all(16),
+            itemCount: items.length,
+            itemBuilder: (context, index) {
+              final item = items[index];
+              final isLow = item.stockQty < 20;
+
+              return Card(
+                child: ListTile(
+                  leading: Icon(
+                    Icons.inventory_2,
+                    color: isLow ? Colors.red : Colors.green,
+                    size: 36,
+                  ),
+                  title: Text(item.name, style: const TextStyle(fontSize: 20, fontWeight: FontWeight.bold)),
+                  subtitle: Text(isLow ? 'Low Stock Warning!' : 'Stock Available'),
+                  trailing: Row(
+                    mainAxisSize: MainAxisSize.min,
+                    children: [
+                      Text(
+                        '${item.stockQty.toStringAsFixed(1)} ${item.unit}',
+                        style: TextStyle(fontSize: 20, fontWeight: FontWeight.bold, color: isLow ? Colors.red : Colors.black),
+                      ),
+                      IconButton(
+                        icon: const Icon(Icons.add_circle, color: Colors.green, size: 30),
+                        onPressed: () => _showStockInDialog(context, item),
+                      ),
+                    ],
+                  ),
+                ),
+              );
+            },
+          );
+        },
+      ),
+    );
+  }
+
+  void _showStockInDialog(BuildContext context, InventoryItem item) {
+    final qtyCtrl = TextEditingController();
+
+    showDialog(
+      context: context,
+      builder: (ctx) => AlertDialog(
+        title: Text('Stock-In: ${item.name}'),
+        content: TextField(
+          controller: qtyCtrl,
+          keyboardType: TextInputType.number,
+          decoration: const InputDecoration(labelText: 'Add Quantity'),
+        ),
+        actions: [
+          TextButton(onPressed: () => Navigator.pop(ctx), child: const Text('Cancel')),
+          ElevatedButton(
+            onPressed: () async {
+              double added = double.tryParse(qtyCtrl.text) ?? 0;
+              await DatabaseHelper.instance.updateStockQty(item.id!, item.stockQty + added);
+              if (!mounted) return;
+              Navigator.pop(ctx);
+              _refreshStock();
+            },
+            child: const Text('Add Stock'),
+          ),
+        ],
+      ),
+    );
+  }
+
+  void _showAddStockDialog(BuildContext context) {
+    final nameCtrl = TextEditingController();
+    final qtyCtrl = TextEditingController();
+    final unitCtrl = TextEditingController(text: 'pcs');
+
+    showDialog(
+      context: context,
+      builder: (ctx) => AlertDialog(
+        title: const Text('Add New Inventory Item'),
+        content: Column(
+          mainAxisSize: MainAxisSize.min,
+          children: [
+            TextField(controller: nameCtrl, decoration: const InputDecoration(labelText: 'Material Name')),
+            TextField(controller: qtyCtrl, keyboardType: TextInputType.number, decoration: const InputDecoration(labelText: 'Initial Quantity')),
+            TextField(controller: unitCtrl, decoration: const InputDecoration(labelText: 'Unit (pcs, kg, liters)')),
+          ],
+        ),
+        actions: [
+          TextButton(onPressed: () => Navigator.pop(ctx), child: const Text('Cancel')),
+          ElevatedButton(
+            onPressed: () async {
+              await DatabaseHelper.instance.addInventoryItem(InventoryItem(
+                name: nameCtrl.text,
+                stockQty: double.tryParse(qtyCtrl.text) ?? 0,
+                unit: unitCtrl.text,
+              ));
+              if (!mounted) return;
+              Navigator.pop(ctx);
+              _refreshStock();
+            },
+            child: const Text('Save Material'),
+          ),
+        ],
+      ),
+    );
+  }
+}
+
+/* ============================================================================
+ * VIEW 5: REPORTS VIEW
  * ========================================================================= */
 class ReportsView extends StatelessWidget {
   final bool isUrdu;
@@ -836,9 +1206,91 @@ class ReportsView extends StatelessWidget {
 }
 
 /* ============================================================================
+ * VIEW 6: SETTINGS VIEW (SHOP SETUP & CUSTOMIZATION)
+ * ========================================================================= */
+class SettingsView extends StatefulWidget {
+  final bool isUrdu;
+  final VoidCallback onSettingsSaved;
+
+  const SettingsView({super.key, required this.isUrdu, required this.onSettingsSaved});
+
+  @override
+  State<SettingsView> createState() => _SettingsViewState();
+}
+
+class _SettingsViewState extends State<SettingsView> {
+  final nameCtrl = TextEditingController();
+  final addressCtrl = TextEditingController();
+  final phoneCtrl = TextEditingController();
+  final upiCtrl = TextEditingController();
+  final pinCtrl = TextEditingController();
+
+  @override
+  void initState() {
+    super.initState();
+    _loadValues();
+  }
+
+  void _loadValues() async {
+    nameCtrl.text = await DatabaseHelper.instance.getSetting('shop_name', defaultValue: 'Bismillah Shereen Mehal Samosa POS');
+    addressCtrl.text = await DatabaseHelper.instance.getSetting('shop_address', defaultValue: 'Main Chowk, Layyah');
+    phoneCtrl.text = await DatabaseHelper.instance.getSetting('shop_phone', defaultValue: '+92 300 1234567');
+    upiCtrl.text = await DatabaseHelper.instance.getSetting('upi_id', defaultValue: 'bismillahsamosa@easypaisa');
+    pinCtrl.text = await DatabaseHelper.instance.getSetting('admin_pin', defaultValue: '1234');
+    setState(() {});
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    return ListView(
+      padding: const EdgeInsets.all(16),
+      children: [
+        Text(
+          widget.isUrdu ? 'دکان کی تفصیلات' : 'Shop Profile & Settings',
+          style: const TextStyle(fontSize: 22, fontWeight: FontWeight.bold),
+        ),
+        const SizedBox(height: 16),
+        TextField(controller: nameCtrl, decoration: const InputDecoration(labelText: 'Shop Name', border: OutlineInputBorder())),
+        const SizedBox(height: 12),
+        TextField(controller: addressCtrl, decoration: const InputDecoration(labelText: 'Address', border: OutlineInputBorder())),
+        const SizedBox(height: 12),
+        TextField(controller: phoneCtrl, decoration: const InputDecoration(labelText: 'Phone Number', border: OutlineInputBorder())),
+        const SizedBox(height: 12),
+        TextField(controller: upiCtrl, decoration: const InputDecoration(labelText: 'UPI / EasyPaisa QR String', border: OutlineInputBorder())),
+        const SizedBox(height: 12),
+        TextField(controller: pinCtrl, obscureText: true, decoration: const InputDecoration(labelText: 'Admin Security PIN', border: OutlineInputBorder())),
+        const SizedBox(height: 20),
+        ElevatedButton.icon(
+          style: ElevatedButton.styleFrom(
+            backgroundColor: Colors.green,
+            padding: const EdgeInsets.symmetric(vertical: 16),
+          ),
+          onPressed: () async {
+            await DatabaseHelper.instance.setSetting('shop_name', nameCtrl.text);
+            await DatabaseHelper.instance.setSetting('shop_address', addressCtrl.text);
+            await DatabaseHelper.instance.setSetting('shop_phone', phoneCtrl.text);
+            await DatabaseHelper.instance.setSetting('upi_id', upiCtrl.text);
+            await DatabaseHelper.instance.setSetting('admin_pin', pinCtrl.text);
+
+            widget.onSettingsSaved();
+
+            if (!mounted) return;
+            ScaffoldMessenger.of(context).showSnackBar(
+              const SnackBar(content: Text('Settings Saved Successfully!')),
+            );
+          },
+          icon: const Icon(Icons.save, color: Colors.white),
+          label: const Text('Save Settings', style: TextStyle(color: Colors.white, fontSize: 18)),
+        ),
+      ],
+    );
+  }
+}
+
+/* ============================================================================
  * THERMAL RECEIPT MODAL
  * ========================================================================= */
-class ReceiptPreviewModal extends StatelessWidget {
+class ReceiptPreviewModal extends StatefulWidget {
   final List<CartItem> cartItems;
   final double total;
   final String paymentMethod;
@@ -853,6 +1305,30 @@ class ReceiptPreviewModal extends StatelessWidget {
     required this.tokenNo,
     required this.isUrdu,
   });
+
+  @override
+  State<ReceiptPreviewModal> createState() => _ReceiptPreviewModalState();
+}
+
+class _ReceiptPreviewModalState extends State<ReceiptPreviewModal> {
+  String shopName = 'Bismillah Shereen Mehal Samosa POS';
+  String shopAddress = 'Main Chowk, Layyah';
+  String shopPhone = '+92 300 1234567';
+  String upiId = 'bismillahsamosa@easypaisa';
+
+  @override
+  void initState() {
+    super.initState();
+    _loadReceiptSettings();
+  }
+
+  void _loadReceiptSettings() async {
+    shopName = await DatabaseHelper.instance.getSetting('shop_name', defaultValue: 'Bismillah Shereen Mehal Samosa POS');
+    shopAddress = await DatabaseHelper.instance.getSetting('shop_address', defaultValue: 'Main Chowk, Layyah');
+    shopPhone = await DatabaseHelper.instance.getSetting('shop_phone', defaultValue: '+92 300 1234567');
+    upiId = await DatabaseHelper.instance.getSetting('upi_id', defaultValue: 'bismillahsamosa@easypaisa');
+    setState(() {});
+  }
 
   @override
   Widget build(BuildContext context) {
@@ -873,19 +1349,19 @@ class ReceiptPreviewModal extends StatelessWidget {
                 color: Colors.white,
                 child: Column(
                   children: [
-                    const Text('ZAM ZAM SAMOSA SHOP', style: TextStyle(fontSize: 20, fontWeight: FontWeight.bold)),
-                    const Text('Main Bazaar Layyah'),
-                    const Text('Ph: +92 300 1234567'),
+                    Text(shopName, style: const TextStyle(fontSize: 18, fontWeight: FontWeight.bold), textAlign: TextAlign.center),
+                    Text(shopAddress),
+                    Text('Ph: $shopPhone'),
                     const Divider(thickness: 2),
                     Row(
                       mainAxisAlignment: MainAxisAlignment.spaceBetween,
                       children: [
-                        Text('Token: $tokenNo', style: const TextStyle(fontWeight: FontWeight.bold, fontSize: 16)),
+                        Text('Token: ${widget.tokenNo}', style: const TextStyle(fontWeight: FontWeight.bold, fontSize: 16)),
                         Text('Bill: $billNo'),
                       ],
                     ),
                     const Divider(),
-                    ...cartItems.map((c) => Padding(
+                    ...widget.cartItems.map((c) => Padding(
                           padding: const EdgeInsets.symmetric(vertical: 4.0),
                           child: Row(
                             mainAxisAlignment: MainAxisAlignment.spaceBetween,
@@ -900,17 +1376,17 @@ class ReceiptPreviewModal extends StatelessWidget {
                       mainAxisAlignment: MainAxisAlignment.spaceBetween,
                       children: [
                         const Text('GRAND TOTAL:', style: TextStyle(fontWeight: FontWeight.bold, fontSize: 18)),
-                        Text('Rs. ${total.toStringAsFixed(0)}', style: const TextStyle(fontWeight: FontWeight.bold, fontSize: 18)),
+                        Text('Rs. ${widget.total.toStringAsFixed(0)}', style: const TextStyle(fontWeight: FontWeight.bold, fontSize: 18)),
                       ],
                     ),
-                    Text('Payment: $paymentMethod', style: const TextStyle(fontStyle: FontStyle.italic)),
+                    Text('Payment: ${widget.paymentMethod}', style: const TextStyle(fontStyle: FontStyle.italic)),
                     const SizedBox(height: 12),
                     QrImageView(
-                      data: 'upi://pay?pa=zamzamsamosa@upi&pn=ZamZamSamosa&am=$total',
+                      data: 'upi://pay?pa=$upiId&pn=BismillahSamosa&am=${widget.total}',
                       version: QrVersions.auto,
                       size: 120.0,
                     ),
-                    const Text('Scan to Pay via UPI', style: TextStyle(fontSize: 12)),
+                    const Text('Scan to Pay (EasyPaisa / UPI)', style: TextStyle(fontSize: 12)),
                     const SizedBox(height: 12),
                     BarcodeWidget(
                       barcode: Barcode.code128(),
