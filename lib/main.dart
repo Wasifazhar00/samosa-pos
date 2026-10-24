@@ -1486,6 +1486,111 @@ class _MenuManagementViewState extends State<MenuManagementView> {
     );
   }
 
+  Future<void> _showRecipeDialog(int menuId, String menuName) async {
+    final inventory = await DatabaseHelper.instance.getInventory();
+    if (!mounted) return;
+    if (inventory.isEmpty) {
+      ScaffoldMessenger.of(context).showSnackBar(
+        const SnackBar(content: Text('Add inventory materials before configuring a recipe.')),
+      );
+      return;
+    }
+
+    final existing = await DatabaseHelper.instance.getRecipesForMenuItem(menuId);
+    if (!mounted) return;
+    final selected = <int, TextEditingController>{};
+    for (final recipe in existing) {
+      final id = recipe['inventory_id'] as int;
+      final qty = (recipe['required_qty'] as num).toDouble();
+      selected[id] = TextEditingController(text: qty.toString());
+    }
+
+    final saved = await showDialog<bool>(
+      context: context,
+      builder: (dialogContext) => StatefulBuilder(
+        builder: (dialogContext, setDialogState) => AlertDialog(
+          title: Text('Stock recipe: $menuName'),
+          content: SizedBox(
+            width: 480,
+            child: SingleChildScrollView(
+              child: Column(
+                mainAxisSize: MainAxisSize.min,
+                children: inventory.map((stock) {
+                  final id = stock.id!;
+                  final isSelected = selected.containsKey(id);
+                  return Padding(
+                    padding: const EdgeInsets.symmetric(vertical: 4),
+                    child: Row(
+                      children: [
+                        Expanded(child: Text('${stock.name} (${stock.unit})')),
+                        Checkbox(
+                          value: isSelected,
+                          onChanged: (checked) {
+                            setDialogState(() {
+                              if (checked == true) {
+                                selected[id] = TextEditingController(text: '1');
+                              } else {
+                                selected.remove(id)?.dispose();
+                              }
+                            });
+                          },
+                        ),
+                        SizedBox(
+                          width: 90,
+                          child: TextField(
+                            controller: selected[id],
+                            enabled: isSelected,
+                            keyboardType: const TextInputType.numberWithOptions(decimal: true),
+                            decoration: const InputDecoration(labelText: 'Qty / item'),
+                          ),
+                        ),
+                      ],
+                    ),
+                  );
+                }).toList(),
+              ),
+            ),
+          ),
+          actions: [
+            TextButton(onPressed: () => Navigator.pop(dialogContext, false), child: const Text('Cancel')),
+            FilledButton(onPressed: () => Navigator.pop(dialogContext, true), child: const Text('Save recipe')),
+          ],
+        ),
+      ),
+    );
+
+    if (saved == true) {
+      try {
+        final recipes = <Map<String, dynamic>>[];
+        for (final entry in selected.entries) {
+          final qty = double.tryParse(entry.value.text.trim());
+          if (qty == null || !qty.isFinite || qty <= 0) {
+            throw FormatException('Every selected ingredient must have a quantity greater than zero.');
+          }
+          recipes.add({'inventory_id': entry.key, 'required_qty': qty});
+        }
+        if (recipes.isEmpty) {
+          throw FormatException('Select at least one ingredient for this menu item.');
+        }
+        await DatabaseHelper.instance.saveRecipesForMenuItem(menuId, recipes);
+        if (mounted) {
+          ScaffoldMessenger.of(context).showSnackBar(
+            const SnackBar(content: Text('Recipe saved successfully.')),
+          );
+        }
+      } catch (error) {
+        if (mounted) {
+          ScaffoldMessenger.of(context).showSnackBar(
+            SnackBar(content: Text('Could not save recipe: $error')),
+          );
+        }
+      }
+    }
+    for (final controller in selected.values) {
+      controller.dispose();
+    }
+  }
+
   void _showAddEditItemDialog(BuildContext context, {MenuItem? item}) {
     final nameEnCtrl = TextEditingController(text: item?.nameEn ?? '');
     final nameUrCtrl = TextEditingController(text: item?.nameUr ?? '');
@@ -2025,7 +2130,7 @@ class _SettingsViewState extends State<SettingsView> {
           style: ElevatedButton.styleFrom(backgroundColor: Colors.blue, padding: const EdgeInsets.symmetric(vertical: 14)),
           onPressed: () async {
             String dbPath = await DatabaseHelper.instance.getDatabasePath();
-            await SharePlus.instance.share(ShareParams(files: [XFile(dbPath)], text: 'Bismillah Samosa POS Database Backup'));
+            await Share.shareXFiles([XFile(dbPath)], text: 'Bismillah Samosa POS Database Backup');
           },
           icon: const Icon(Icons.backup, color: Colors.white),
           label: const Text('Backup Database File', style: TextStyle(color: Colors.white, fontSize: 16)),
@@ -2120,7 +2225,7 @@ class _ReceiptPreviewModalState extends State<ReceiptPreviewModal> {
       final file = await File('${tempDir.path}/receipt_${DateTime.now().millisecondsSinceEpoch}.png').create();
       await file.writeAsBytes(pngBytes);
 
-      await SharePlus.instance.share(ShareParams(files: [XFile(file.path)], text: 'Receipt from $shopName'));
+      await Share.shareXFiles([XFile(file.path)], text: 'Receipt from $shopName');
     } catch (e) {
       if (!mounted) return;
       ScaffoldMessenger.of(context).showSnackBar(SnackBar(content: Text('Failed to share image: $e')));
