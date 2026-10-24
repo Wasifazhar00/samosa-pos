@@ -9,15 +9,24 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
+      
       - uses: actions/setup-java@v3
         with:
           distribution: 'zulu'
           java-version: '17'
+
       - uses: subosito/flutter-action@v2
         with:
           channel: 'stable'
+
+      # Automatically generate android platform configuration files
+      - name: Create Android Platform Files
+        run: flutter create . --platforms=android --org com.samosapos.app
+
       - run: flutter pub get
+      
       - run: flutter build apk --release
+
       - name: Upload APK
         uses: actions/upload-artifact@v4
         with:
@@ -29,12 +38,21 @@ jobs:
     runs-on: windows-latest
     steps:
       - uses: actions/checkout@v4
+
       - uses: subosito/flutter-action@v2
         with:
           channel: 'stable'
+
       - run: flutter config --enable-windows-desktop
+
+      # Automatically generate windows platform configuration files
+      - name: Create Windows Platform Files
+        run: flutter create . --platforms=windows --org com.samosapos.app
+
       - run: flutter pub get
+
       - run: flutter build windows --release
+
       - name: Upload Windows EXE Bundle
         uses: actions/upload-artifact@v4
         with:
