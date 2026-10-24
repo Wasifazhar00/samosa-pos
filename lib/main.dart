@@ -1,7 +1,10 @@
 import 'dart:async';
 import 'dart:io';
+import 'dart:ui' as ui;
 import 'package:flutter/material.dart';
+import 'package:flutter/rendering.dart';
 import 'package:path/path.dart' as p;
+import 'package:path_provider/path_provider.dart';
 import 'package:sqflite/sqflite.dart';
 import 'package:sqflite_common_ffi/sqflite_common_ffi.dart';
 import 'package:qr_flutter/qr_flutter.dart';
@@ -50,10 +53,10 @@ class MenuItem {
 
   factory MenuItem.fromMap(Map<String, dynamic> map) => MenuItem(
         id: map['id'],
-        nameEn: map['name_en'],
-        nameUr: map['name_ur'],
+        nameEn: map['name_en'] ?? '',
+        nameUr: map['name_ur'] ?? '',
         price: (map['price'] as num).toDouble(),
-        icon: map['icon'],
+        icon: map['icon'] ?? '馃嵔锔�',
         inStock: map['in_stock'] == 1,
       );
 }
@@ -75,9 +78,9 @@ class InventoryItem {
 
   factory InventoryItem.fromMap(Map<String, dynamic> map) => InventoryItem(
         id: map['id'],
-        name: map['name'],
+        name: map['name'] ?? '',
         stockQty: (map['stock_qty'] as num).toDouble(),
-        unit: map['unit'],
+        unit: map['unit'] ?? 'pcs',
       );
 }
 
@@ -121,16 +124,16 @@ class SaleRecord {
 
   factory SaleRecord.fromMap(Map<String, dynamic> map) => SaleRecord(
         id: map['id'],
-        billNo: map['bill_no'],
-        tokenNo: map['token_no'],
+        billNo: map['bill_no'] ?? '',
+        tokenNo: map['token_no'] ?? '',
         orderType: map['order_type'] ?? 'Dine-In',
         itemsSummary: map['items_summary'] ?? '',
         customerMobile: map['customer_mobile'],
         customerAddress: map['customer_address'],
         totalAmount: (map['total_amount'] as num).toDouble(),
-        paymentMethod: map['payment_method'],
+        paymentMethod: map['payment_method'] ?? 'Cash',
         isPaid: map['is_paid'] == 1,
-        createdAt: map['created_at'],
+        createdAt: map['created_at'] ?? '',
       );
 }
 
@@ -163,7 +166,7 @@ class DatabaseHelper {
 
   Future<Database> get database async {
     if (_database != null) return _database!;
-    _database = await _initDB('bismillah_samosa_pos_v7.db');
+    _database = await _initDB('bismillah_samosa_pos_v8.db');
     return _database!;
   }
 
@@ -326,6 +329,20 @@ class DatabaseHelper {
     await db.update('sales', {'is_paid': isPaid ? 1 : 0}, where: 'id = ?', whereArgs: [saleId]);
   }
 
+  Future<void> updateSaleDetails(int saleId, double newAmount, String mobile, String address) async {
+    final db = await instance.database;
+    await db.update(
+      'sales',
+      {
+        'total_amount': newAmount,
+        'customer_mobile': mobile.isNotEmpty ? mobile : null,
+        'customer_address': address.isNotEmpty ? address : null,
+      },
+      where: 'id = ?',
+      whereArgs: [saleId],
+    );
+  }
+
   Future<void> deleteSale(int saleId) async {
     final db = await instance.database;
     await db.delete('sales', where: 'id = ?', whereArgs: [saleId]);
@@ -392,7 +409,7 @@ class DatabaseHelper {
 
   Future<String> getDatabasePath() async {
     final dbPath = await getDatabasesPath();
-    return p.join(dbPath, 'bismillah_samosa_pos_v7.db');
+    return p.join(dbPath, 'bismillah_samosa_pos_v8.db');
   }
 }
 
@@ -552,7 +569,7 @@ class _MainPosScreenState extends State<MainPosScreen> {
           ),
           NavigationDestination(
             icon: const Icon(Icons.receipt_long),
-            label: widget.isUrdu ? '乇倬賵乇俟爻' : 'Reports',
+            label: widget.isUrdu ? '賱蹖噩乇 (Transactions)' : 'Transactions',
           ),
           NavigationDestination(
             icon: const Icon(Icons.settings),
@@ -1159,7 +1176,10 @@ class _MenuManagementViewState extends State<MenuManagementView> {
               return Card(
                 child: ListTile(
                   leading: Text(item.icon, style: const TextStyle(fontSize: 28)),
-                  title: Text('${item.nameEn} / ${item.nameUr}', style: const TextStyle(fontSize: 16, fontWeight: FontWeight.bold)),
+                  title: Text(
+                    widget.isUrdu ? item.nameUr : item.nameEn,
+                    style: const TextStyle(fontSize: 16, fontWeight: FontWeight.bold),
+                  ),
                   subtitle: Text('Rs. ${item.price} | ${item.inStock ? "In Stock" : "Out of Stock"}'),
                   trailing: Row(
                     mainAxisSize: MainAxisSize.min,
@@ -1299,20 +1319,36 @@ class _InventoryViewState extends State<InventoryView> {
               final isLow = item.stockQty < 20;
 
               return Card(
-                child: ListTile(
-                  leading: Icon(
-                    Icons.inventory_2,
-                    color: isLow ? Colors.red : Colors.green,
-                    size: 28,
-                  ),
-                  title: Text(item.name, style: const TextStyle(fontSize: 16, fontWeight: FontWeight.bold)),
-                  subtitle: Text(isLow ? 'Low Stock Warning!' : 'Stock Available'),
-                  trailing: Row(
-                    mainAxisSize: MainAxisSize.min,
+                child: Padding(
+                  padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 8),
+                  child: Row(
                     children: [
+                      Icon(
+                        Icons.inventory_2,
+                        color: isLow ? Colors.red : Colors.green,
+                        size: 28,
+                      ),
+                      const SizedBox(width: 12),
+                      Expanded(
+                        child: Column(
+                          crossAxisAlignment: CrossAxisAlignment.start,
+                          children: [
+                            Text(
+                              item.name,
+                              style: const TextStyle(fontSize: 16, fontWeight: FontWeight.bold),
+                              maxLines: 1,
+                              overflow: TextOverflow.ellipsis,
+                            ),
+                            Text(
+                              isLow ? 'Low Stock Warning!' : 'Stock Available',
+                              style: TextStyle(fontSize: 12, color: isLow ? Colors.red : Colors.grey.shade700),
+                            ),
+                          ],
+                        ),
+                      ),
                       Text(
                         '${item.stockQty.toStringAsFixed(1)} ${item.unit}',
-                        style: TextStyle(fontSize: 16, fontWeight: FontWeight.bold, color: isLow ? Colors.red : Colors.black),
+                        style: TextStyle(fontSize: 15, fontWeight: FontWeight.bold, color: isLow ? Colors.red : Colors.black),
                       ),
                       IconButton(
                         icon: const Icon(Icons.add_circle, color: Colors.green, size: 24),
@@ -1404,7 +1440,7 @@ class _InventoryViewState extends State<InventoryView> {
 }
 
 /* ============================================================================
- * VIEW 5: REAL-TIME REPORTS & EDITABLE SALES HISTORY
+ * VIEW 5: VYAPAR-STYLE TRANSACTIONS & KHATA LEDGER
  * ========================================================================= */
 class ReportsAndSalesHistoryView extends StatefulWidget {
   final bool isUrdu;
@@ -1417,6 +1453,8 @@ class ReportsAndSalesHistoryView extends StatefulWidget {
 
 class _ReportsAndSalesHistoryViewState extends State<ReportsAndSalesHistoryView> {
   late Future<List<SaleRecord>> _salesFuture;
+  String searchFilter = '';
+  String paymentFilter = 'All';
 
   @override
   void initState() {
@@ -1438,26 +1476,73 @@ class _ReportsAndSalesHistoryViewState extends State<ReportsAndSalesHistoryView>
         builder: (context, snapshot) {
           if (!snapshot.hasData) return const Center(child: CircularProgressIndicator());
 
-          final sales = snapshot.data!;
-          final double totalPaidSales = sales.where((s) => s.isPaid).fold(0, (sum, s) => sum + s.totalAmount);
-          final double totalUnpaidSales = sales.where((s) => !s.isPaid).fold(0, (sum, s) => sum + s.totalAmount);
+          final allSales = snapshot.data!;
+
+          // Filter Logic
+          final sales = allSales.where((s) {
+            bool matchesSearch = searchFilter.isEmpty ||
+                s.billNo.toLowerCase().contains(searchFilter.toLowerCase()) ||
+                (s.customerMobile != null && s.customerMobile!.contains(searchFilter));
+
+            bool matchesFilter = true;
+            if (paymentFilter == 'Paid') matchesFilter = s.isPaid;
+            if (paymentFilter == 'Unpaid') matchesFilter = !s.isPaid;
+
+            return matchesSearch && matchesFilter;
+          }).toList();
+
+          final double totalPaidSales = allSales.where((s) => s.isPaid).fold(0, (sum, s) => sum + s.totalAmount);
+          final double totalUnpaidSales = allSales.where((s) => !s.isPaid).fold(0, (sum, s) => sum + s.totalAmount);
 
           return Column(
             children: [
+              // Summary Banner
               Padding(
                 padding: const EdgeInsets.all(8.0),
                 child: Row(
                   children: [
                     _buildSummaryCard('Paid Sales', 'Rs. ${totalPaidSales.toStringAsFixed(0)}', Colors.green),
-                    _buildSummaryCard('Unpaid / Udhar', 'Rs. ${totalUnpaidSales.toStringAsFixed(0)}', Colors.red),
-                    _buildSummaryCard('Total Orders', '${sales.length}', Colors.blue),
+                    _buildSummaryCard('Udhar / Receivables', 'Rs. ${totalUnpaidSales.toStringAsFixed(0)}', Colors.red),
+                    _buildSummaryCard('Total Bills', '${allSales.length}', Colors.blue),
+                  ],
+                ),
+              ),
+
+              // Search & Filter Controls
+              Padding(
+                padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 4),
+                child: Row(
+                  children: [
+                    Expanded(
+                      child: TextField(
+                        decoration: const InputDecoration(
+                          hintText: 'Search Mobile / Bill #',
+                          prefixIcon: Icon(Icons.search),
+                          border: OutlineInputBorder(),
+                          isDense: true,
+                        ),
+                        onChanged: (val) => setState(() => searchFilter = val),
+                      ),
+                    ),
+                    const SizedBox(width: 8),
+                    DropdownButton<String>(
+                      value: paymentFilter,
+                      items: const [
+                        DropdownMenuItem(value: 'All', child: Text('All Bills')),
+                        DropdownMenuItem(value: 'Paid', child: Text('Paid Only')),
+                        DropdownMenuItem(value: 'Unpaid', child: Text('Udhar Only')),
+                      ],
+                      onChanged: (v) => setState(() => paymentFilter = v!),
+                    ),
                   ],
                 ),
               ),
               const Divider(height: 1),
+
+              // Transactions List
               Expanded(
                 child: sales.isEmpty
-                    ? const Center(child: Text('No sales recorded yet'))
+                    ? const Center(child: Text('No transactions match your search'))
                     : ListView.builder(
                         padding: const EdgeInsets.all(8),
                         itemCount: sales.length,
@@ -1495,9 +1580,13 @@ class _ReportsAndSalesHistoryViewState extends State<ReportsAndSalesHistoryView>
                                       _refreshSales();
                                     },
                                     child: Text(
-                                      sale.isPaid ? 'Unpaid' : 'Paid',
+                                      sale.isPaid ? 'Mark Unpaid' : 'Mark Paid',
                                       style: const TextStyle(color: Colors.white, fontSize: 11),
                                     ),
+                                  ),
+                                  IconButton(
+                                    icon: const Icon(Icons.edit, color: Colors.blue, size: 20),
+                                    onPressed: () => _showEditTransactionDialog(context, sale),
                                   ),
                                   IconButton(
                                     icon: const Icon(Icons.delete, color: Colors.red, size: 20),
@@ -1516,6 +1605,40 @@ class _ReportsAndSalesHistoryViewState extends State<ReportsAndSalesHistoryView>
             ],
           );
         },
+      ),
+    );
+  }
+
+  void _showEditTransactionDialog(BuildContext context, SaleRecord sale) {
+    final amountCtrl = TextEditingController(text: sale.totalAmount.toString());
+    final mobileCtrl = TextEditingController(text: sale.customerMobile ?? '');
+    final addressCtrl = TextEditingController(text: sale.customerAddress ?? '');
+
+    showDialog(
+      context: context,
+      builder: (ctx) => AlertDialog(
+        title: Text('Edit Transaction: ${sale.billNo}'),
+        content: Column(
+          mainAxisSize: MainAxisSize.min,
+          children: [
+            TextField(controller: amountCtrl, keyboardType: TextInputType.number, decoration: const InputDecoration(labelText: 'Total Amount (Rs.)')),
+            TextField(controller: mobileCtrl, keyboardType: TextInputType.phone, decoration: const InputDecoration(labelText: 'Customer Mobile')),
+            TextField(controller: addressCtrl, decoration: const InputDecoration(labelText: 'Delivery Address')),
+          ],
+        ),
+        actions: [
+          TextButton(onPressed: () => Navigator.pop(ctx), child: const Text('Cancel')),
+          ElevatedButton(
+            onPressed: () async {
+              double newAmt = double.tryParse(amountCtrl.text) ?? sale.totalAmount;
+              await DatabaseHelper.instance.updateSaleDetails(sale.id!, newAmt, mobileCtrl.text, addressCtrl.text);
+              if (!mounted) return;
+              Navigator.pop(ctx);
+              _refreshSales();
+            },
+            child: const Text('Update Transaction'),
+          ),
+        ],
       ),
     );
   }
@@ -1660,7 +1783,7 @@ class _SettingsViewState extends State<SettingsView> {
 }
 
 /* ============================================================================
- * THERMAL RECEIPT MODAL
+ * THERMAL RECEIPT MODAL (WITH WHATSAPP IMAGE GENERATION)
  * ========================================================================= */
 class ReceiptPreviewModal extends StatefulWidget {
   final List<CartItem> cartItems;
@@ -1689,6 +1812,7 @@ class ReceiptPreviewModal extends StatefulWidget {
 }
 
 class _ReceiptPreviewModalState extends State<ReceiptPreviewModal> {
+  final GlobalKey _receiptKey = GlobalKey();
   String shopName = 'Bismillah Shereen Mehal Samosa POS';
   String shopAddress = 'Main Chowk, Layyah';
   String shopPhone = '+92 300 1234567';
@@ -1708,6 +1832,23 @@ class _ReceiptPreviewModalState extends State<ReceiptPreviewModal> {
     setState(() {});
   }
 
+  Future<void> _shareReceiptImage() async {
+    try {
+      RenderRepaintBoundary boundary = _receiptKey.currentContext!.findRenderObject() as RenderRepaintBoundary;
+      ui.Image image = await boundary.toImage(pixelRatio: 3.0);
+      var byteData = await image.toByteData(format: ui.ImageByteFormat.png);
+      var pngBytes = byteData!.buffer.asUint8List();
+
+      final tempDir = await getTemporaryDirectory();
+      final file = await File('${tempDir.path}/receipt_${DateTime.now().millisecondsSinceEpoch}.png').create();
+      await file.writeAsBytes(pngBytes);
+
+      await Share.shareXFiles([XFile(file.path)], text: 'Receipt from $shopName');
+    } catch (e) {
+      ScaffoldMessenger.of(context).showSnackBar(SnackBar(content: Text('Failed to share image: $e')));
+    }
+  }
+
   @override
   Widget build(BuildContext context) {
     String billNo = 'INV-${DateTime.now().millisecondsSinceEpoch.toString().substring(7)}';
@@ -1717,78 +1858,81 @@ class _ReceiptPreviewModalState extends State<ReceiptPreviewModal> {
       height: MediaQuery.of(context).size.height * 0.85,
       child: Column(
         children: [
-          const Text('Thermal Receipt Preview (58mm/80mm)', style: TextStyle(fontSize: 16, fontWeight: FontWeight.bold)),
+          const Text('Thermal Receipt Preview', style: TextStyle(fontSize: 16, fontWeight: FontWeight.bold)),
           const Divider(),
           Expanded(
             child: SingleChildScrollView(
-              child: Container(
-                width: 280,
-                padding: const EdgeInsets.all(12),
-                color: Colors.white,
-                child: Column(
-                  children: [
-                    Text(shopName, style: const TextStyle(fontSize: 16, fontWeight: FontWeight.bold), textAlign: TextAlign.center),
-                    Text(shopAddress, style: const TextStyle(fontSize: 12)),
-                    Text('Ph: $shopPhone', style: const TextStyle(fontSize: 12)),
-                    const Divider(thickness: 2),
+              child: RepaintBoundary(
+                key: _receiptKey,
+                child: Container(
+                  width: 280,
+                  padding: const EdgeInsets.all(12),
+                  color: Colors.white,
+                  child: Column(
+                    children: [
+                      Text(shopName, style: const TextStyle(fontSize: 16, fontWeight: FontWeight.bold), textAlign: TextAlign.center),
+                      Text(shopAddress, style: const TextStyle(fontSize: 12)),
+                      Text('Ph: $shopPhone', style: const TextStyle(fontSize: 12)),
+                      const Divider(thickness: 2),
 
-                    Row(
-                      mainAxisAlignment: MainAxisAlignment.spaceBetween,
-                      children: [
-                        Text('Token: ${widget.tokenNo}', style: const TextStyle(fontWeight: FontWeight.bold, fontSize: 14)),
-                        Text('Type: ${widget.orderType}', style: const TextStyle(fontSize: 12)),
-                      ],
-                    ),
-                    if (widget.mobile.isNotEmpty) Text('Customer: ${widget.mobile}', style: const TextStyle(fontSize: 12)),
-                    const Divider(),
-
-                    ...widget.cartItems.map((c) => Padding(
-                          padding: const EdgeInsets.symmetric(vertical: 2.0),
-                          child: Row(
-                            mainAxisAlignment: MainAxisAlignment.spaceBetween,
-                            children: [
-                              Text('${c.item.nameEn} x${c.quantity}', style: const TextStyle(fontSize: 12)),
-                              Text('Rs. ${c.total.toStringAsFixed(0)}', style: const TextStyle(fontSize: 12)),
-                            ],
-                          ),
-                        )),
-                    const Divider(thickness: 2),
-
-                    Row(
-                      mainAxisAlignment: MainAxisAlignment.spaceBetween,
-                      children: [
-                        const Text('GRAND TOTAL:', style: TextStyle(fontWeight: FontWeight.bold, fontSize: 16)),
-                        Text('Rs. ${widget.total.toStringAsFixed(0)}', style: const TextStyle(fontWeight: FontWeight.bold, fontSize: 16)),
-                      ],
-                    ),
-
-                    Container(
-                      margin: const EdgeInsets.symmetric(vertical: 6),
-                      padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 2),
-                      color: widget.isPaid ? Colors.green : Colors.red,
-                      child: Text(
-                        widget.isPaid ? 'PAID' : 'UNPAID / UDHAR',
-                        style: const TextStyle(color: Colors.white, fontWeight: FontWeight.bold, fontSize: 12),
+                      Row(
+                        mainAxisAlignment: MainAxisAlignment.spaceBetween,
+                        children: [
+                          Text('Token: ${widget.tokenNo}', style: const TextStyle(fontWeight: FontWeight.bold, fontSize: 14)),
+                          Text('Type: ${widget.orderType}', style: const TextStyle(fontSize: 12)),
+                        ],
                       ),
-                    ),
+                      if (widget.mobile.isNotEmpty) Text('Customer: ${widget.mobile}', style: const TextStyle(fontSize: 12)),
+                      const Divider(),
 
-                    const SizedBox(height: 8),
-                    QrImageView(
-                      data: accountInfo,
-                      version: QrVersions.auto,
-                      size: 100.0,
-                    ),
-                    Text(accountInfo, style: const TextStyle(fontSize: 10), textAlign: TextAlign.center),
-                    const SizedBox(height: 8),
-                    BarcodeWidget(
-                      barcode: Barcode.code128(),
-                      data: billNo,
-                      height: 30,
-                      width: 150,
-                    ),
-                    const SizedBox(height: 6),
-                    const Text('Thank you! Visit again.', style: TextStyle(fontWeight: FontWeight.bold, fontSize: 12)),
-                  ],
+                      ...widget.cartItems.map((c) => Padding(
+                            padding: const EdgeInsets.symmetric(vertical: 2.0),
+                            child: Row(
+                              mainAxisAlignment: MainAxisAlignment.spaceBetween,
+                              children: [
+                                Text('${c.item.nameEn} x${c.quantity}', style: const TextStyle(fontSize: 12)),
+                                Text('Rs. ${c.total.toStringAsFixed(0)}', style: const TextStyle(fontSize: 12)),
+                              ],
+                            ),
+                          )),
+                      const Divider(thickness: 2),
+
+                      Row(
+                        mainAxisAlignment: MainAxisAlignment.spaceBetween,
+                        children: [
+                          const Text('GRAND TOTAL:', style: TextStyle(fontWeight: FontWeight.bold, fontSize: 16)),
+                          Text('Rs. ${widget.total.toStringAsFixed(0)}', style: const TextStyle(fontWeight: FontWeight.bold, fontSize: 16)),
+                        ],
+                      ),
+
+                      Container(
+                        margin: const EdgeInsets.symmetric(vertical: 6),
+                        padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 2),
+                        color: widget.isPaid ? Colors.green : Colors.red,
+                        child: Text(
+                          widget.isPaid ? 'PAID' : 'UNPAID / UDHAR',
+                          style: const TextStyle(color: Colors.white, fontWeight: FontWeight.bold, fontSize: 12),
+                        ),
+                      ),
+
+                      const SizedBox(height: 8),
+                      QrImageView(
+                        data: accountInfo,
+                        version: QrVersions.auto,
+                        size: 100.0,
+                      ),
+                      Text(accountInfo, style: const TextStyle(fontSize: 10), textAlign: TextAlign.center),
+                      const SizedBox(height: 8),
+                      BarcodeWidget(
+                        barcode: Barcode.code128(),
+                        data: billNo,
+                        height: 30,
+                        width: 150,
+                      ),
+                      const SizedBox(height: 6),
+                      const Text('Thank you! Visit again.', style: TextStyle(fontWeight: FontWeight.bold, fontSize: 12)),
+                    ],
+                  ),
                 ),
               ),
             ),
@@ -1799,12 +1943,9 @@ class _ReceiptPreviewModalState extends State<ReceiptPreviewModal> {
               Expanded(
                 child: ElevatedButton.icon(
                   style: ElevatedButton.styleFrom(backgroundColor: Colors.teal, minimumSize: const Size(0, 44)),
-                  onPressed: () {
-                    String receiptText = '*$shopName*\nBill: $billNo\nToken: ${widget.tokenNo}\nTotal: Rs. ${widget.total}\nStatus: ${widget.isPaid ? "PAID" : "UNPAID"}\nThank you!';
-                    Share.share(receiptText);
-                  },
+                  onPressed: _shareReceiptImage,
                   icon: const Icon(Icons.share, color: Colors.white, size: 18),
-                  label: const Text('Share', style: TextStyle(color: Colors.white)),
+                  label: const Text('Share Image (WhatsApp)', style: TextStyle(color: Colors.white, fontSize: 12)),
                 ),
               ),
               const SizedBox(width: 8),
@@ -1812,8 +1953,8 @@ class _ReceiptPreviewModalState extends State<ReceiptPreviewModal> {
                 child: ElevatedButton.icon(
                   style: ElevatedButton.styleFrom(backgroundColor: Colors.green, minimumSize: const Size(0, 44)),
                   onPressed: () => Navigator.pop(context),
-                  icon: const Icon(Icons.print, color: Colors.white, size: 18),
-                  label: const Text('Print', style: TextStyle(color: Colors.white)),
+                  icon: const Icon(Icons.check, color: Colors.white, size: 18),
+                  label: const Text('Done', style: TextStyle(color: Colors.white)),
                 ),
               ),
             ],
