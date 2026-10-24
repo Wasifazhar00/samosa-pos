@@ -6,6 +6,7 @@ import 'package:sqflite/sqflite.dart';
 import 'package:sqflite_common_ffi/sqflite_common_ffi.dart';
 import 'package:qr_flutter/qr_flutter.dart';
 import 'package:barcode_widget/barcode_widget.dart';
+import 'package:share_plus/share_plus.dart';
 
 void main() async {
   WidgetsFlutterBinding.ensureInitialized();
@@ -92,6 +93,45 @@ class CartItem {
   double get total => customPrice * quantity;
 }
 
+class SaleRecord {
+  final int? id;
+  final String billNo;
+  final String tokenNo;
+  final String orderType;
+  final String? customerMobile;
+  final String? customerAddress;
+  final double totalAmount;
+  final String paymentMethod;
+  final bool isPaid;
+  final String createdAt;
+
+  SaleRecord({
+    this.id,
+    required this.billNo,
+    required this.tokenNo,
+    required this.orderType,
+    this.customerMobile,
+    this.customerAddress,
+    required this.totalAmount,
+    required this.paymentMethod,
+    required this.isPaid,
+    required this.createdAt,
+  });
+
+  factory SaleRecord.fromMap(Map<String, dynamic> map) => SaleRecord(
+        id: map['id'],
+        billNo: map['bill_no'],
+        tokenNo: map['token_no'],
+        orderType: map['order_type'] ?? 'Dine-In',
+        customerMobile: map['customer_mobile'],
+        customerAddress: map['customer_address'],
+        totalAmount: (map['total_amount'] as num).toDouble(),
+        paymentMethod: map['payment_method'],
+        isPaid: map['is_paid'] == 1,
+        createdAt: map['created_at'],
+      );
+}
+
 class OrderToken {
   final String id;
   final String tokenNo;
@@ -111,7 +151,7 @@ class OrderToken {
 }
 
 /* ============================================================================
- * DATABASE & SETTINGS HELPER
+ * DATABASE HELPER
  * ========================================================================= */
 class DatabaseHelper {
   static final DatabaseHelper instance = DatabaseHelper._init();
@@ -121,7 +161,7 @@ class DatabaseHelper {
 
   Future<Database> get database async {
     if (_database != null) return _database!;
-    _database = await _initDB('bismillah_samosa_pos.db');
+    _database = await _initDB('bismillah_samosa_pos_v2.db');
     return _database!;
   }
 
@@ -131,7 +171,7 @@ class DatabaseHelper {
 
     return await openDatabase(
       path,
-      version: 2,
+      version: 1,
       onCreate: _createDB,
     );
   }
@@ -171,8 +211,12 @@ class DatabaseHelper {
         id INTEGER PRIMARY KEY AUTOINCREMENT,
         bill_no TEXT,
         token_no TEXT,
+        order_type TEXT,
+        customer_mobile TEXT,
+        customer_address TEXT,
         total_amount REAL,
         payment_method TEXT,
+        is_paid INTEGER,
         created_at TEXT
       )
     ''');
@@ -188,15 +232,14 @@ class DatabaseHelper {
   }
 
   Future<void> _seedDefaults(Database db) async {
-    // Default Settings
     await db.insert('settings', {'key': 'shop_name', 'value': 'Bismillah Shereen Mehal Samosa POS'});
     await db.insert('settings', {'key': 'shop_address', 'value': 'Main Chowk, Layyah'});
     await db.insert('settings', {'key': 'shop_phone', 'value': '+92 300 1234567'});
-    await db.insert('settings', {'key': 'upi_id', 'value': 'bismillahsamosa@easypaisa'});
-    await db.insert('settings', {'key': 'admin_pin', 'value': '1234'});
-    await db.insert('settings', {'key': 'receipt_footer', 'value': 'Thank you! Visit Bismillah Shereen Mehal again.'});
+    await db.insert('settings', {'key': 'payment_account_info', 'value': 'EasyPaisa/JazzCash: 03001234567'});
+    await db.insert('settings', {'key': 'enable_dine_in', 'value': '1'});
+    await db.insert('settings', {'key': 'enable_takeaway', 'value': '1'});
+    await db.insert('settings', {'key': 'enable_delivery', 'value': '1'});
 
-    // Seed Inventory
     int patiId = await db.insert('inventory', {'name': 'Samosa Pati', 'stock_qty': 500, 'unit': 'pcs'});
     int chanaId = await db.insert('inventory', {'name': 'Chana', 'stock_qty': 100, 'unit': 'servings'});
     int chatniId = await db.insert('inventory', {'name': 'Chatni', 'stock_qty': 100, 'unit': 'servings'});
@@ -204,14 +247,12 @@ class DatabaseHelper {
     int alooId = await db.insert('inventory', {'name': 'Aloo Filling', 'stock_qty': 50, 'unit': 'kg'});
     int cokeId = await db.insert('inventory', {'name': 'Cold Drink (Coke)', 'stock_qty': 40, 'unit': 'bottles'});
 
-    // Seed Menu
     int m1 = await db.insert('menu', {'name_en': 'Chicken Samosa', 'name_ur': 'چکن سموسہ', 'price': 50, 'icon': '🍗', 'in_stock': 1});
     int m2 = await db.insert('menu', {'name_en': 'Aloo Samosa', 'name_ur': 'آلو سموسہ', 'price': 30, 'icon': '🥔', 'in_stock': 1});
     int m3 = await db.insert('menu', {'name_en': 'Single Plate', 'name_ur': 'سنگل پلیٹ', 'price': 80, 'icon': '🍽️', 'in_stock': 1});
     int m4 = await db.insert('menu', {'name_en': 'Double Plate', 'name_ur': 'ڈبل پلیٹ', 'price': 140, 'icon': '🍱', 'in_stock': 1});
     int m5 = await db.insert('menu', {'name_en': 'Cold Drink', 'name_ur': 'کولڈ ڈرنک', 'price': 70, 'icon': '🥤', 'in_stock': 1});
 
-    // Seed Recipes (BOM)
     await db.insert('recipes', {'menu_id': m1, 'inventory_id': patiId, 'required_qty': 1});
     await db.insert('recipes', {'menu_id': m1, 'inventory_id': chickenId, 'required_qty': 0.05});
 
@@ -229,7 +270,7 @@ class DatabaseHelper {
     await db.insert('recipes', {'menu_id': m5, 'inventory_id': cokeId, 'required_qty': 1});
   }
 
-  // --- MENU MANAGEMENT CRUD ---
+  // --- MENU CRUD ---
   Future<List<MenuItem>> getMenuItems() async {
     final db = await instance.database;
     final result = await db.query('menu');
@@ -251,7 +292,7 @@ class DatabaseHelper {
     return await db.delete('menu', where: 'id = ?', whereArgs: [id]);
   }
 
-  // --- INVENTORY MANAGEMENT CRUD ---
+  // --- INVENTORY CRUD (DELETE SUPPORT ADDED) ---
   Future<List<InventoryItem>> getInventory() async {
     final db = await instance.database;
     final result = await db.query('inventory');
@@ -263,9 +304,69 @@ class DatabaseHelper {
     return await db.insert('inventory', item.toMap());
   }
 
+  Future<int> deleteInventoryItem(int id) async {
+    final db = await instance.database;
+    return await db.delete('inventory', where: 'id = ?', whereArgs: [id]);
+  }
+
   Future<int> updateStockQty(int id, double newQty) async {
     final db = await instance.database;
     return await db.rawUpdate('UPDATE inventory SET stock_qty = ? WHERE id = ?', [newQty, id]);
+  }
+
+  // --- SALES & TRANSACTIONS CRUD ---
+  Future<List<SaleRecord>> getAllSales() async {
+    final db = await instance.database;
+    final result = await db.query('sales', orderBy: 'id DESC');
+    return result.map((json) => SaleRecord.fromMap(json)).toList();
+  }
+
+  Future<void> updatePaymentStatus(int saleId, bool isPaid) async {
+    final db = await instance.database;
+    await db.update('sales', {'is_paid': isPaid ? 1 : 0}, where: 'id = ?', whereArgs: [saleId]);
+  }
+
+  // Process Sales
+  Future<void> processSale({
+    required List<CartItem> cartItems,
+    required String paymentMethod,
+    required String tokenNo,
+    required String orderType,
+    required bool isPaid,
+    String? mobile,
+    String? address,
+  }) async {
+    final db = await instance.database;
+
+    await db.transaction((txn) async {
+      double grandTotal = 0;
+
+      for (var cart in cartItems) {
+        grandTotal += cart.total;
+
+        final recipes = await txn.query('recipes', where: 'menu_id = ?', whereArgs: [cart.item.id]);
+
+        for (var rule in recipes) {
+          int invId = rule['inventory_id'] as int;
+          double reqQty = (rule['required_qty'] as num).toDouble();
+          double totalDeduction = reqQty * cart.quantity;
+
+          await txn.rawUpdate('UPDATE inventory SET stock_qty = stock_qty - ? WHERE id = ?', [totalDeduction, invId]);
+        }
+      }
+
+      await txn.insert('sales', {
+        'bill_no': 'INV-${DateTime.now().millisecondsSinceEpoch.toString().substring(7)}',
+        'token_no': tokenNo,
+        'order_type': orderType,
+        'customer_mobile': mobile,
+        'customer_address': address,
+        'total_amount': grandTotal,
+        'payment_method': paymentMethod,
+        'is_paid': isPaid ? 1 : 0,
+        'created_at': DateTime.now().toIso8601String(),
+      });
+    });
   }
 
   // --- SETTINGS CRUD ---
@@ -280,49 +381,7 @@ class DatabaseHelper {
 
   Future<void> setSetting(String key, String value) async {
     final db = await instance.database;
-    await db.insert(
-      'settings',
-      {'key': key, 'value': value},
-      conflictAlgorithm: ConflictAlgorithm.replace,
-    );
-  }
-
-  // Process Sales & Deduct Stock
-  Future<void> processSale(List<CartItem> cartItems, String paymentMethod, String tokenNo) async {
-    final db = await instance.database;
-
-    await db.transaction((txn) async {
-      double grandTotal = 0;
-
-      for (var cart in cartItems) {
-        grandTotal += cart.total;
-
-        final recipes = await txn.query(
-          'recipes',
-          where: 'menu_id = ?',
-          whereArgs: [cart.item.id],
-        );
-
-        for (var rule in recipes) {
-          int invId = rule['inventory_id'] as int;
-          double reqQty = (rule['required_qty'] as num).toDouble();
-          double totalDeduction = reqQty * cart.quantity;
-
-          await txn.rawUpdate(
-            'UPDATE inventory SET stock_qty = stock_qty - ? WHERE id = ?',
-            [totalDeduction, invId],
-          );
-        }
-      }
-
-      await txn.insert('sales', {
-        'bill_no': 'INV-${DateTime.now().millisecondsSinceEpoch.toString().substring(7)}',
-        'token_no': tokenNo,
-        'total_amount': grandTotal,
-        'payment_method': paymentMethod,
-        'created_at': DateTime.now().toIso8601String(),
-      });
-    });
+    await db.insert('settings', {'key': key, 'value': value}, conflictAlgorithm: ConflictAlgorithm.replace);
   }
 }
 
@@ -362,7 +421,7 @@ class _SamosaPosAppState extends State<SamosaPosApp> {
 }
 
 /* ============================================================================
- * MAIN SCREEN (NAV BARS & TABS)
+ * MAIN POS CONTAINER SCREEN
  * ========================================================================= */
 class MainPosScreen extends StatefulWidget {
   final bool isUrdu;
@@ -452,7 +511,7 @@ class _MainPosScreenState extends State<MainPosScreen> {
           ),
           MenuManagementView(isUrdu: widget.isUrdu),
           InventoryView(isUrdu: widget.isUrdu),
-          ReportsView(isUrdu: widget.isUrdu),
+          ReportsAndSalesHistoryView(isUrdu: widget.isUrdu),
           SettingsView(
             isUrdu: widget.isUrdu,
             onSettingsSaved: _loadSettings,
@@ -473,15 +532,15 @@ class _MainPosScreenState extends State<MainPosScreen> {
           ),
           NavigationDestination(
             icon: const Icon(Icons.restaurant_menu, size: 28),
-            label: widget.isUrdu ? 'مینو (Menu)' : 'Menu Edit',
+            label: widget.isUrdu ? 'مینو' : 'Menu Edit',
           ),
           NavigationDestination(
             icon: const Icon(Icons.inventory, size: 28),
-            label: widget.isUrdu ? 'سٹاک (Stock)' : 'Inventory',
+            label: widget.isUrdu ? 'سٹاک' : 'Inventory',
           ),
           NavigationDestination(
-            icon: const Icon(Icons.bar_chart, size: 28),
-            label: widget.isUrdu ? 'رپورٹس' : 'Reports',
+            icon: const Icon(Icons.receipt_long, size: 28),
+            label: widget.isUrdu ? 'سیل ہسٹری' : 'Sales History',
           ),
           NavigationDestination(
             icon: const Icon(Icons.settings, size: 28),
@@ -494,7 +553,7 @@ class _MainPosScreenState extends State<MainPosScreen> {
 }
 
 /* ============================================================================
- * VIEW 1: POS TERMINAL VIEW
+ * VIEW 1: POS TERMINAL VIEW (DINE-IN / TAKEAWAY / DELIVERY & FLEXIBLE FORM)
  * ========================================================================= */
 class PosTerminalView extends StatefulWidget {
   final bool isUrdu;
@@ -522,12 +581,34 @@ class PosTerminalView extends StatefulWidget {
 
 class _PosTerminalViewState extends State<PosTerminalView> {
   late Future<List<MenuItem>> _menuItemsFuture;
+  String selectedOrderType = 'Dine-In';
+  final mobileCtrl = TextEditingController();
+  final addressCtrl = TextEditingController();
   double discount = 0;
+
+  bool enableDineIn = true;
+  bool enableTakeaway = true;
+  bool enableDelivery = true;
 
   @override
   void initState() {
     super.initState();
     _refreshMenu();
+    _loadOrderTypeSettings();
+  }
+
+  void _loadOrderTypeSettings() async {
+    String d = await DatabaseHelper.instance.getSetting('enable_dine_in', defaultValue: '1');
+    String t = await DatabaseHelper.instance.getSetting('enable_takeaway', defaultValue: '1');
+    String del = await DatabaseHelper.instance.getSetting('enable_delivery', defaultValue: '1');
+
+    setState(() {
+      enableDineIn = d == '1';
+      enableTakeaway = t == '1';
+      enableDelivery = del == '1';
+      if (!enableDineIn && enableTakeaway) selectedOrderType = 'Takeaway';
+      if (!enableDineIn && !enableTakeaway && enableDelivery) selectedOrderType = 'Delivery';
+    });
   }
 
   void _refreshMenu() {
@@ -608,18 +689,42 @@ class _PosTerminalViewState extends State<PosTerminalView> {
               padding: const EdgeInsets.all(12.0),
               child: Column(
                 children: [
-                  Container(
-                    width: double.infinity,
-                    padding: const EdgeInsets.all(8),
-                    color: Colors.grey.shade200,
-                    child: Row(
-                      mainAxisAlignment: MainAxisAlignment.spaceBetween,
-                      children: [
-                        Text('Token: ${widget.tokenNo}', style: const TextStyle(fontSize: 18, fontWeight: FontWeight.bold)),
-                        Text('Table: ${widget.tableName}', style: const TextStyle(fontSize: 18, fontWeight: FontWeight.bold)),
-                      ],
-                    ),
+                  // Order Type Toggle
+                  SegmentedButton<String>(
+                    segments: [
+                      if (enableDineIn) const ButtonSegment(value: 'Dine-In', label: Text('Dine-In')),
+                      if (enableTakeaway) const ButtonSegment(value: 'Takeaway', label: Text('Takeaway')),
+                      if (enableDelivery) const ButtonSegment(value: 'Delivery', label: Text('Delivery')),
+                    ],
+                    selected: {selectedOrderType},
+                    onSelectionChanged: (val) => setState(() => selectedOrderType = val.first),
                   ),
+                  const SizedBox(height: 8),
+
+                  // Delivery Mode Details (ONLY MOBILE IS MANDATORY)
+                  if (selectedOrderType == 'Delivery') ...[
+                    TextField(
+                      controller: mobileCtrl,
+                      keyboardType: TextInputType.phone,
+                      decoration: const InputDecoration(
+                        labelText: 'Mobile Number (Compulsory *)',
+                        prefixIcon: Icon(Icons.phone),
+                        border: OutlineInputBorder(),
+                        isDense: true,
+                      ),
+                    ),
+                    const SizedBox(height: 6),
+                    TextField(
+                      controller: addressCtrl,
+                      decoration: const InputDecoration(
+                        labelText: 'Delivery Address (Optional)',
+                        prefixIcon: Icon(Icons.home),
+                        border: OutlineInputBorder(),
+                        isDense: true,
+                      ),
+                    ),
+                    const SizedBox(height: 8),
+                  ],
 
                   Expanded(
                     child: widget.cart.isEmpty
@@ -747,27 +852,43 @@ class _PosTerminalViewState extends State<PosTerminalView> {
   }
 
   void _showCheckoutDialog(BuildContext context) {
+    if (selectedOrderType == 'Delivery' && mobileCtrl.text.trim().isEmpty) {
+      ScaffoldMessenger.of(context).showSnackBar(
+        const SnackBar(content: Text('Mobile number is required for Delivery orders!')),
+      );
+      return;
+    }
+
     showDialog(
       context: context,
       builder: (ctx) => AlertDialog(
-        title: Text(widget.isUrdu ? 'ادائیگی منتخب کریں' : 'Select Payment Method'),
+        title: Text(widget.isUrdu ? 'ادائیگی اور سٹیٹس' : 'Payment Method & Status'),
         content: Column(
           mainAxisSize: MainAxisSize.min,
           children: [
             ListTile(
-              leading: const Icon(Icons.money, size: 36, color: Colors.green),
-              title: Text(widget.isUrdu ? 'نقد (Cash)' : 'Cash'),
+              leading: const Icon(Icons.check_circle, size: 36, color: Colors.green),
+              title: const Text('PAID (Cash)'),
               onTap: () {
                 Navigator.pop(ctx);
-                _completePayment('Cash');
+                _completePayment('Cash', true);
               },
             ),
             ListTile(
               leading: const Icon(Icons.qr_code, size: 36, color: Colors.blue),
-              title: Text(widget.isUrdu ? 'آن لائن / EasyPaisa / UPI' : 'Online / EasyPaisa / UPI'),
+              title: const Text('PAID (Online / EasyPaisa / JazzCash)'),
               onTap: () {
                 Navigator.pop(ctx);
-                _completePayment('Online');
+                _completePayment('Online', true);
+              },
+            ),
+            const Divider(),
+            ListTile(
+              leading: const Icon(Icons.cancel, size: 36, color: Colors.red),
+              title: const Text('UNPAID / UDHAR (قرض)'),
+              onTap: () {
+                Navigator.pop(ctx);
+                _completePayment('Unpaid', false);
               },
             ),
           ],
@@ -776,8 +897,16 @@ class _PosTerminalViewState extends State<PosTerminalView> {
     );
   }
 
-  void _completePayment(String method) async {
-    await DatabaseHelper.instance.processSale(widget.cart, method, widget.tokenNo);
+  void _completePayment(String method, bool isPaid) async {
+    await DatabaseHelper.instance.processSale(
+      cartItems: widget.cart,
+      paymentMethod: method,
+      tokenNo: widget.tokenNo,
+      orderType: selectedOrderType,
+      isPaid: isPaid,
+      mobile: mobileCtrl.text.isNotEmpty ? mobileCtrl.text : null,
+      address: addressCtrl.text.isNotEmpty ? addressCtrl.text : null,
+    );
 
     if (!mounted) return;
 
@@ -789,6 +918,9 @@ class _PosTerminalViewState extends State<PosTerminalView> {
         total: grandTotal,
         paymentMethod: method,
         tokenNo: widget.tokenNo,
+        isPaid: isPaid,
+        orderType: selectedOrderType,
+        mobile: mobileCtrl.text,
         isUrdu: widget.isUrdu,
       ),
     );
@@ -869,7 +1001,7 @@ class TablesView extends StatelessWidget {
 }
 
 /* ============================================================================
- * VIEW 3: MENU MANAGEMENT VIEW (ADD / EDIT / DELETE)
+ * VIEW 3: MENU MANAGEMENT
  * ========================================================================= */
 class MenuManagementView extends StatefulWidget {
   final bool isUrdu;
@@ -1009,7 +1141,7 @@ class _MenuManagementViewState extends State<MenuManagementView> {
 }
 
 /* ============================================================================
- * VIEW 4: INVENTORY VIEW (STOCK-IN & RAW MATERIALS)
+ * VIEW 4: INVENTORY VIEW (DELETE RAW MATERIALS SUPPORTED)
  * ========================================================================= */
 class InventoryView extends StatefulWidget {
   final bool isUrdu;
@@ -1073,8 +1205,16 @@ class _InventoryViewState extends State<InventoryView> {
                         style: TextStyle(fontSize: 20, fontWeight: FontWeight.bold, color: isLow ? Colors.red : Colors.black),
                       ),
                       IconButton(
-                        icon: const Icon(Icons.add_circle, color: Colors.green, size: 30),
+                        icon: const Icon(Icons.add_circle, color: Colors.green, size: 28),
                         onPressed: () => _showStockInDialog(context, item),
+                      ),
+                      // DELETE BUTTON FOR RAW MATERIALS
+                      IconButton(
+                        icon: const Icon(Icons.delete_forever, color: Colors.red, size: 28),
+                        onPressed: () async {
+                          await DatabaseHelper.instance.deleteInventoryItem(item.id!);
+                          _refreshStock();
+                        },
                       ),
                     ],
                   ),
@@ -1124,7 +1264,7 @@ class _InventoryViewState extends State<InventoryView> {
     showDialog(
       context: context,
       builder: (ctx) => AlertDialog(
-        title: const Text('Add New Inventory Item'),
+        title: const Text('Add New Raw Material'),
         content: Column(
           mainAxisSize: MainAxisSize.min,
           children: [
@@ -1155,48 +1295,127 @@ class _InventoryViewState extends State<InventoryView> {
 }
 
 /* ============================================================================
- * VIEW 5: REPORTS VIEW
+ * VIEW 5: SALES HISTORY & PAID/UNPAID CONTROL
  * ========================================================================= */
-class ReportsView extends StatelessWidget {
+class ReportsAndSalesHistoryView extends StatefulWidget {
   final bool isUrdu;
 
-  const ReportsView({super.key, required this.isUrdu});
+  const ReportsAndSalesHistoryView({super.key, required this.isUrdu});
+
+  @override
+  State<ReportsAndSalesHistoryView> createState() => _ReportsAndSalesHistoryViewState();
+}
+
+class _ReportsAndSalesHistoryViewState extends State<ReportsAndSalesHistoryView> {
+  late Future<List<SaleRecord>> _salesFuture;
+
+  @override
+  void initState() {
+    super.initState();
+    _refreshSales();
+  }
+
+  void _refreshSales() {
+    setState(() {
+      _salesFuture = DatabaseHelper.instance.getAllSales();
+    });
+  }
 
   @override
   Widget build(BuildContext context) {
-    return Padding(
-      padding: const EdgeInsets.all(16.0),
-      child: Column(
-        crossAxisAlignment: CrossAxisAlignment.start,
-        children: [
-          Text(
-            isUrdu ? 'آج کی کارکردگی (Day-End Z Report)' : 'Today\'s Z-Report Summary',
-            style: const TextStyle(fontSize: 24, fontWeight: FontWeight.bold),
-          ),
-          const SizedBox(height: 16),
-          Row(
+    return Scaffold(
+      body: FutureBuilder<List<SaleRecord>>(
+        future: _salesFuture,
+        builder: (context, snapshot) {
+          if (!snapshot.hasData) return const Center(child: CircularProgressIndicator());
+
+          final sales = snapshot.data!;
+          final double totalPaidSales = sales.where((s) => s.isPaid).fold(0, (sum, s) => sum + s.totalAmount);
+          final double totalUnpaidSales = sales.where((s) => !s.isPaid).fold(0, (sum, s) => sum + s.totalAmount);
+
+          return Column(
             children: [
-              _buildReportCard('Total Sales', 'Rs. 12,450', Colors.green),
-              _buildReportCard('Patis Consumed', '184 pcs', Colors.orange),
-              _buildReportCard('Bills Count', '42 Orders', Colors.blue),
+              // Summary Banner
+              Padding(
+                padding: const EdgeInsets.all(12.0),
+                child: Row(
+                  children: [
+                    _buildSummaryCard('Paid Sales', 'Rs. ${totalPaidSales.toStringAsFixed(0)}', Colors.green),
+                    _buildSummaryCard('Unpaid / Udhar', 'Rs. ${totalUnpaidSales.toStringAsFixed(0)}', Colors.red),
+                    _buildSummaryCard('Total Bills', '${sales.length}', Colors.blue),
+                  ],
+                ),
+              ),
+              const Divider(),
+
+              // Entry-Wise Sales History
+              Expanded(
+                child: ListView.builder(
+                  padding: const EdgeInsets.all(12),
+                  itemCount: sales.length,
+                  itemBuilder: (context, index) {
+                    final sale = sales[index];
+                    return Card(
+                      elevation: 3,
+                      child: ListTile(
+                        leading: CircleAvatar(
+                          backgroundColor: sale.isPaid ? Colors.green : Colors.red,
+                          child: Icon(sale.isPaid ? Icons.check : Icons.priority_high, color: Colors.white),
+                        ),
+                        title: Text('${sale.billNo} | Token: ${sale.tokenNo} (${sale.orderType})'),
+                        subtitle: Text(
+                          'Mobile: ${sale.customerMobile ?? "N/A"} | Date: ${sale.createdAt.substring(0, 16).replaceAll("T", " ")}',
+                        ),
+                        trailing: Row(
+                          mainAxisSize: MainAxisSize.min,
+                          children: [
+                            Text(
+                              'Rs. ${sale.totalAmount.toStringAsFixed(0)}',
+                              style: TextStyle(
+                                fontSize: 18,
+                                fontWeight: FontWeight.bold,
+                                color: sale.isPaid ? Colors.green : Colors.red,
+                              ),
+                            ),
+                            const SizedBox(width: 8),
+                            ElevatedButton(
+                              style: ElevatedButton.styleFrom(
+                                backgroundColor: sale.isPaid ? Colors.grey : Colors.green,
+                              ),
+                              onPressed: () async {
+                                await DatabaseHelper.instance.updatePaymentStatus(sale.id!, !sale.isPaid);
+                                _refreshSales();
+                              },
+                              child: Text(
+                                sale.isPaid ? 'Mark Unpaid' : 'Mark Paid',
+                                style: const TextStyle(color: Colors.white),
+                              ),
+                            ),
+                          ],
+                        ),
+                      ),
+                    );
+                  },
+                ),
+              ),
             ],
-          ),
-        ],
+          );
+        },
       ),
     );
   }
 
-  Widget _buildReportCard(String title, String value, Color color) {
+  Widget _buildSummaryCard(String title, String value, Color color) {
     return Expanded(
       child: Card(
         color: color.withOpacity(0.1),
         child: Padding(
-          padding: const EdgeInsets.all(20.0),
+          padding: const EdgeInsets.all(12.0),
           child: Column(
             children: [
-              Text(title, style: const TextStyle(fontSize: 18)),
-              const SizedBox(height: 8),
-              Text(value, style: TextStyle(fontSize: 26, fontWeight: FontWeight.bold, color: color)),
+              Text(title, style: const TextStyle(fontSize: 16)),
+              const SizedBox(height: 4),
+              Text(value, style: TextStyle(fontSize: 22, fontWeight: FontWeight.bold, color: color)),
             ],
           ),
         ),
@@ -1206,7 +1425,7 @@ class ReportsView extends StatelessWidget {
 }
 
 /* ============================================================================
- * VIEW 6: SETTINGS VIEW (SHOP SETUP & CUSTOMIZATION)
+ * VIEW 6: SETTINGS VIEW (TOGGLES & EASYPAISA/JAZZCASH/BANK QR)
  * ========================================================================= */
 class SettingsView extends StatefulWidget {
   final bool isUrdu;
@@ -1222,8 +1441,11 @@ class _SettingsViewState extends State<SettingsView> {
   final nameCtrl = TextEditingController();
   final addressCtrl = TextEditingController();
   final phoneCtrl = TextEditingController();
-  final upiCtrl = TextEditingController();
-  final pinCtrl = TextEditingController();
+  final accountInfoCtrl = TextEditingController();
+
+  bool enableDineIn = true;
+  bool enableTakeaway = true;
+  bool enableDelivery = true;
 
   @override
   void initState() {
@@ -1235,9 +1457,17 @@ class _SettingsViewState extends State<SettingsView> {
     nameCtrl.text = await DatabaseHelper.instance.getSetting('shop_name', defaultValue: 'Bismillah Shereen Mehal Samosa POS');
     addressCtrl.text = await DatabaseHelper.instance.getSetting('shop_address', defaultValue: 'Main Chowk, Layyah');
     phoneCtrl.text = await DatabaseHelper.instance.getSetting('shop_phone', defaultValue: '+92 300 1234567');
-    upiCtrl.text = await DatabaseHelper.instance.getSetting('upi_id', defaultValue: 'bismillahsamosa@easypaisa');
-    pinCtrl.text = await DatabaseHelper.instance.getSetting('admin_pin', defaultValue: '1234');
-    setState(() {});
+    accountInfoCtrl.text = await DatabaseHelper.instance.getSetting('payment_account_info', defaultValue: 'EasyPaisa/JazzCash: 03001234567');
+
+    String d = await DatabaseHelper.instance.getSetting('enable_dine_in', defaultValue: '1');
+    String t = await DatabaseHelper.instance.getSetting('enable_takeaway', defaultValue: '1');
+    String del = await DatabaseHelper.instance.getSetting('enable_delivery', defaultValue: '1');
+
+    setState(() {
+      enableDineIn = d == '1';
+      enableTakeaway = t == '1';
+      enableDelivery = del == '1';
+    });
   }
 
   @override
@@ -1245,10 +1475,7 @@ class _SettingsViewState extends State<SettingsView> {
     return ListView(
       padding: const EdgeInsets.all(16),
       children: [
-        Text(
-          widget.isUrdu ? 'دکان کی تفصیلات' : 'Shop Profile & Settings',
-          style: const TextStyle(fontSize: 22, fontWeight: FontWeight.bold),
-        ),
+        const Text('Shop Profile & Settings', style: TextStyle(fontSize: 22, fontWeight: FontWeight.bold)),
         const SizedBox(height: 16),
         TextField(controller: nameCtrl, decoration: const InputDecoration(labelText: 'Shop Name', border: OutlineInputBorder())),
         const SizedBox(height: 12),
@@ -1256,9 +1483,32 @@ class _SettingsViewState extends State<SettingsView> {
         const SizedBox(height: 12),
         TextField(controller: phoneCtrl, decoration: const InputDecoration(labelText: 'Phone Number', border: OutlineInputBorder())),
         const SizedBox(height: 12),
-        TextField(controller: upiCtrl, decoration: const InputDecoration(labelText: 'UPI / EasyPaisa QR String', border: OutlineInputBorder())),
-        const SizedBox(height: 12),
-        TextField(controller: pinCtrl, obscureText: true, decoration: const InputDecoration(labelText: 'Admin Security PIN', border: OutlineInputBorder())),
+        TextField(
+          controller: accountInfoCtrl,
+          decoration: const InputDecoration(
+            labelText: 'EasyPaisa / JazzCash / Bank Account Info (For QR Code)',
+            border: OutlineInputBorder(),
+          ),
+        ),
+        const SizedBox(height: 16),
+
+        const Text('Order Types Enable / Disable', style: TextStyle(fontSize: 18, fontWeight: FontWeight.bold)),
+        SwitchListTile(
+          title: const Text('Enable Dine-In Options'),
+          value: enableDineIn,
+          onChanged: (v) => setState(() => enableDineIn = v),
+        ),
+        SwitchListTile(
+          title: const Text('Enable Takeaway Options'),
+          value: enableTakeaway,
+          onChanged: (v) => setState(() => enableTakeaway = v),
+        ),
+        SwitchListTile(
+          title: const Text('Enable Delivery Options'),
+          value: enableDelivery,
+          onChanged: (v) => setState(() => enableDelivery = v),
+        ),
+
         const SizedBox(height: 20),
         ElevatedButton.icon(
           style: ElevatedButton.styleFrom(
@@ -1269,15 +1519,15 @@ class _SettingsViewState extends State<SettingsView> {
             await DatabaseHelper.instance.setSetting('shop_name', nameCtrl.text);
             await DatabaseHelper.instance.setSetting('shop_address', addressCtrl.text);
             await DatabaseHelper.instance.setSetting('shop_phone', phoneCtrl.text);
-            await DatabaseHelper.instance.setSetting('upi_id', upiCtrl.text);
-            await DatabaseHelper.instance.setSetting('admin_pin', pinCtrl.text);
+            await DatabaseHelper.instance.setSetting('payment_account_info', accountInfoCtrl.text);
+            await DatabaseHelper.instance.setSetting('enable_dine_in', enableDineIn ? '1' : '0');
+            await DatabaseHelper.instance.setSetting('enable_takeaway', enableTakeaway ? '1' : '0');
+            await DatabaseHelper.instance.setSetting('enable_delivery', enableDelivery ? '1' : '0');
 
             widget.onSettingsSaved();
 
             if (!mounted) return;
-            ScaffoldMessenger.of(context).showSnackBar(
-              const SnackBar(content: Text('Settings Saved Successfully!')),
-            );
+            ScaffoldMessenger.of(context).showSnackBar(const SnackBar(content: Text('Settings Saved Successfully!')));
           },
           icon: const Icon(Icons.save, color: Colors.white),
           label: const Text('Save Settings', style: TextStyle(color: Colors.white, fontSize: 18)),
@@ -1288,13 +1538,16 @@ class _SettingsViewState extends State<SettingsView> {
 }
 
 /* ============================================================================
- * THERMAL RECEIPT MODAL
+ * THERMAL RECEIPT MODAL (WHATSAPP SHARE ADDED)
  * ========================================================================= */
 class ReceiptPreviewModal extends StatefulWidget {
   final List<CartItem> cartItems;
   final double total;
   final String paymentMethod;
   final String tokenNo;
+  final bool isPaid;
+  final String orderType;
+  final String mobile;
   final bool isUrdu;
 
   const ReceiptPreviewModal({
@@ -1303,6 +1556,9 @@ class ReceiptPreviewModal extends StatefulWidget {
     required this.total,
     required this.paymentMethod,
     required this.tokenNo,
+    required this.isPaid,
+    required this.orderType,
+    required this.mobile,
     required this.isUrdu,
   });
 
@@ -1314,7 +1570,7 @@ class _ReceiptPreviewModalState extends State<ReceiptPreviewModal> {
   String shopName = 'Bismillah Shereen Mehal Samosa POS';
   String shopAddress = 'Main Chowk, Layyah';
   String shopPhone = '+92 300 1234567';
-  String upiId = 'bismillahsamosa@easypaisa';
+  String accountInfo = 'EasyPaisa/JazzCash: 03001234567';
 
   @override
   void initState() {
@@ -1326,7 +1582,7 @@ class _ReceiptPreviewModalState extends State<ReceiptPreviewModal> {
     shopName = await DatabaseHelper.instance.getSetting('shop_name', defaultValue: 'Bismillah Shereen Mehal Samosa POS');
     shopAddress = await DatabaseHelper.instance.getSetting('shop_address', defaultValue: 'Main Chowk, Layyah');
     shopPhone = await DatabaseHelper.instance.getSetting('shop_phone', defaultValue: '+92 300 1234567');
-    upiId = await DatabaseHelper.instance.getSetting('upi_id', defaultValue: 'bismillahsamosa@easypaisa');
+    accountInfo = await DatabaseHelper.instance.getSetting('payment_account_info', defaultValue: 'EasyPaisa/JazzCash: 03001234567');
     setState(() {});
   }
 
@@ -1353,14 +1609,17 @@ class _ReceiptPreviewModalState extends State<ReceiptPreviewModal> {
                     Text(shopAddress),
                     Text('Ph: $shopPhone'),
                     const Divider(thickness: 2),
+
                     Row(
                       mainAxisAlignment: MainAxisAlignment.spaceBetween,
                       children: [
                         Text('Token: ${widget.tokenNo}', style: const TextStyle(fontWeight: FontWeight.bold, fontSize: 16)),
-                        Text('Bill: $billNo'),
+                        Text('Type: ${widget.orderType}'),
                       ],
                     ),
+                    if (widget.mobile.isNotEmpty) Text('Customer: ${widget.mobile}'),
                     const Divider(),
+
                     ...widget.cartItems.map((c) => Padding(
                           padding: const EdgeInsets.symmetric(vertical: 4.0),
                           child: Row(
@@ -1372,6 +1631,7 @@ class _ReceiptPreviewModalState extends State<ReceiptPreviewModal> {
                           ),
                         )),
                     const Divider(thickness: 2),
+
                     Row(
                       mainAxisAlignment: MainAxisAlignment.spaceBetween,
                       children: [
@@ -1379,20 +1639,30 @@ class _ReceiptPreviewModalState extends State<ReceiptPreviewModal> {
                         Text('Rs. ${widget.total.toStringAsFixed(0)}', style: const TextStyle(fontWeight: FontWeight.bold, fontSize: 18)),
                       ],
                     ),
-                    Text('Payment: ${widget.paymentMethod}', style: const TextStyle(fontStyle: FontStyle.italic)),
+
+                    Container(
+                      margin: const EdgeInsets.symmetric(vertical: 6),
+                      padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 4),
+                      color: widget.isPaid ? Colors.green : Colors.red,
+                      child: Text(
+                        widget.isPaid ? 'PAID' : 'UNPAID / UDHAR',
+                        style: const TextStyle(color: Colors.white, fontWeight: FontWeight.bold),
+                      ),
+                    ),
+
                     const SizedBox(height: 12),
                     QrImageView(
-                      data: 'upi://pay?pa=$upiId&pn=BismillahSamosa&am=${widget.total}',
+                      data: accountInfo,
                       version: QrVersions.auto,
-                      size: 120.0,
+                      size: 110.0,
                     ),
-                    const Text('Scan to Pay (EasyPaisa / UPI)', style: TextStyle(fontSize: 12)),
+                    Text(accountInfo, style: const TextStyle(fontSize: 10), textAlign: TextAlign.center),
                     const SizedBox(height: 12),
                     BarcodeWidget(
                       barcode: Barcode.code128(),
                       data: billNo,
-                      height: 40,
-                      width: 180,
+                      height: 35,
+                      width: 170,
                     ),
                     const SizedBox(height: 8),
                     const Text('Thank you! Visit again.', style: TextStyle(fontWeight: FontWeight.bold)),
@@ -1402,14 +1672,35 @@ class _ReceiptPreviewModalState extends State<ReceiptPreviewModal> {
             ),
           ),
           const SizedBox(height: 12),
-          ElevatedButton.icon(
-            style: ElevatedButton.styleFrom(
-              backgroundColor: Colors.green,
-              minimumSize: const Size(double.infinity, 50),
-            ),
-            onPressed: () => Navigator.pop(context),
-            icon: const Icon(Icons.print, color: Colors.white),
-            label: const Text('Print Receipt Now', style: TextStyle(color: Colors.white, fontSize: 18)),
+          Row(
+            children: [
+              Expanded(
+                child: ElevatedButton.icon(
+                  style: ElevatedButton.styleFrom(
+                    backgroundColor: Colors.teal,
+                    minimumSize: const Size(0, 50),
+                  ),
+                  onPressed: () {
+                    String receiptText = '*$shopName*\nBill: $billNo\nToken: ${widget.tokenNo}\nTotal: Rs. ${widget.total}\nStatus: ${widget.isPaid ? "PAID" : "UNPAID"}\nThank you!';
+                    Share.share(receiptText);
+                  },
+                  icon: const Icon(Icons.share, color: Colors.white),
+                  label: const Text('Share on WhatsApp', style: TextStyle(color: Colors.white)),
+                ),
+              ),
+              const SizedBox(width: 8),
+              Expanded(
+                child: ElevatedButton.icon(
+                  style: ElevatedButton.styleFrom(
+                    backgroundColor: Colors.green,
+                    minimumSize: const Size(0, 50),
+                  ),
+                  onPressed: () => Navigator.pop(context),
+                  icon: const Icon(Icons.print, color: Colors.white),
+                  label: const Text('Print Receipt', style: TextStyle(color: Colors.white)),
+                ),
+              ),
+            ],
           ),
         ],
       ),
