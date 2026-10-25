@@ -1,0 +1,71 @@
+name: Build APK and Windows app
+
+on:
+  workflow_dispatch:
+  push:
+    branches: [main]
+
+permissions:
+  contents: read
+
+jobs:
+  build-apk:
+    name: Build Android APK
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+      - name: Set up Java
+        uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: '17'
+      - name: Set up Flutter
+        uses: subosito/flutter-action@v2
+        with:
+          channel: stable
+          cache: true
+      - name: Generate Android platform files
+        run: flutter create . --platforms=android --org com.samosapos.app
+      - name: Show Flutter version
+        run: flutter --version
+      - name: Resolve dependencies
+        run: flutter pub get
+      - name: Analyze Dart source
+        run: flutter analyze --no-pub
+      - name: Build release APK
+        run: flutter build apk --release
+      - name: Upload APK artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: Samosa-POS-Android-APK
+          path: build/app/outputs/flutter-apk/app-release.apk
+          if-no-files-found: error
+
+  build-windows:
+    name: Build Windows app
+    runs-on: windows-latest
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+      - name: Set up Flutter
+        uses: subosito/flutter-action@v2
+        with:
+          channel: stable
+          cache: true
+      - name: Enable Windows desktop
+        run: flutter config --enable-windows-desktop
+      - name: Generate Windows platform files
+        run: flutter create . --platforms=windows --org com.samosapos.app
+      - name: Resolve dependencies
+        run: flutter pub get
+      - name: Analyze Dart source
+        run: flutter analyze --no-pub
+      - name: Build Windows release
+        run: flutter build windows --release
+      - name: Upload Windows release bundle
+        uses: actions/upload-artifact@v4
+        with:
+          name: Samosa-POS-Windows-Release
+          path: build/windows/x64/runner/Release/
+          if-no-files-found: error
